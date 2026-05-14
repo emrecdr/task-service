@@ -139,7 +139,7 @@ task-service/
 └── README.md
 ```
 
-> **Test split rule of thumb:** *can this test run with only my feature module imported?* If yes → it's unit, lives in `app/services/<feature>/tests/`. If it needs `app.main.app`, real HTTP, or another feature → it crosses a boundary and lives under `tests/` at the project root.
+> **Test split rule of thumb:** _can this test run with only my feature module imported?_ If yes → it's unit, lives in `app/services/<feature>/tests/`. If it needs `app.main.app`, real HTTP, or another feature → it crosses a boundary and lives under `tests/` at the project root.
 
 ---
 
@@ -526,7 +526,7 @@ async def create_task(
 def list_tasks(
     statuses: list[Status] | None = Query(default=None, alias="status"),
     sort: Literal["priority_asc", "priority_desc"] = "priority_desc",
-    limit: int = Query(default=50, ge=1, le=200),
+    limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     service: TaskService = Depends(get_task_service),
 ):
@@ -758,7 +758,7 @@ class Settings(BaseSettings):
     database_url: str = "sqlite+pysqlite:///:memory:"
     log_level: str | None = None
     default_list_limit: int = 50
-    max_list_limit: int = 200
+    max_list_limit: int = 500
 
     @property
     def log_level_int(self) -> int:
@@ -900,14 +900,14 @@ The SQLite `:memory:` engine is built with `connect_args={"check_same_thread": F
 
 The project uses a **hybrid layout**: unit tests live with the feature module, every other category lives under the project-root `tests/` directory.
 
-| Test type | Where it lives | What it touches | Speed |
-|---|---|---|---|
-| **Unit** | `app/services/<feature>/tests/` | Pure Python; no FastAPI, no DB I/O | Milliseconds |
-| **Integration** | `tests/integration/` | Full FastAPI app + in-memory repo, in-process | Hundreds of ms |
-| **Contract** | `tests/contract/` | One file per port, parametrized over all impls | Hundreds of ms |
-| **E2E (Hurl)** | `tests/hurl/` | Real HTTP against container | Seconds |
-| **E2E (property)** | `tests/e2e/` | OpenAPI-driven via Schemathesis (optional in Phase 1) | Tens of seconds |
-| **Load (Phase 2+)** | `tests/load/` | Locust workload profiles | Minutes |
+| Test type           | Where it lives                  | What it touches                                       | Speed           |
+| ------------------- | ------------------------------- | ----------------------------------------------------- | --------------- |
+| **Unit**            | `app/services/<feature>/tests/` | Pure Python; no FastAPI, no DB I/O                    | Milliseconds    |
+| **Integration**     | `tests/integration/`            | Full FastAPI app + in-memory repo, in-process         | Hundreds of ms  |
+| **Contract**        | `tests/contract/`               | One file per port, parametrized over all impls        | Hundreds of ms  |
+| **E2E (Hurl)**      | `tests/hurl/`                   | Real HTTP against container                           | Seconds         |
+| **E2E (property)**  | `tests/e2e/`                    | OpenAPI-driven via Schemathesis (optional in Phase 1) | Tens of seconds |
+| **Load (Phase 2+)** | `tests/load/`                   | Locust workload profiles                              | Minutes         |
 
 ### 9.1 `pyproject.toml` — pytest config
 
@@ -1160,11 +1160,11 @@ schemathesis:
 ### 10.5 CI (representative pipeline)
 
 1. `make install` (uv sync + pre-commit install)
-2. `uv run pre-commit run --all-files`   # ruff, ruff-format, bandit, file hygiene
-3. `make typecheck`                       # mypy
-4. `make test`                            # pytest + coverage gate at 80%
-5. `make hurl-e2e`                        # Hurl scenarios against container
-6. (optional) `make schemathesis`         # OpenAPI fuzz
+2. `uv run pre-commit run --all-files` # ruff, ruff-format, bandit, file hygiene
+3. `make typecheck` # mypy
+4. `make test` # pytest + coverage gate at 80%
+5. `make hurl-e2e` # Hurl scenarios against container
+6. (optional) `make schemathesis` # OpenAPI fuzz
 7. `docker build .`
 
 Any step failing fails the build. Hurl reports (`reports/hurl/*.html`) are uploaded as CI artifacts.
@@ -1180,7 +1180,7 @@ Any step failing fails the build. Hurl reports (`reports/hurl/*.html`) are uploa
   1. **Container:** `ENV TZ=UTC` in the Dockerfile so library fallbacks to system time still produce UTC.
   2. **Code:** `datetime.now(UTC)` is the only constructor used; naive `datetime` is treated as a bug. A unit test (`app/services/tasks/tests/test_task_model.py`) asserts `Task.created_at.tzinfo is not None`.
   3. **Logs:** `structlog.processors.TimeStamper(fmt="iso", utc=True)` produces ISO-8601 UTC strings in every log line, with no offset suffix.
-  Distributed-team safety: every stand-up reference to "the task created at 14:01" is unambiguous because the timestamp the API returned is UTC by contract.
+     Distributed-team safety: every stand-up reference to "the task created at 14:01" is unambiguous because the timestamp the API returned is UTC by contract.
 
 ---
 

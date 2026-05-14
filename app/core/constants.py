@@ -5,4 +5,4 @@ from typing import Final, Literal
 AppEnv = Literal["dev", "test", "qa", "prod"]
 
 DEFAULT_LIST_LIMIT: Final[int] = 50
-MAX_LIST_LIMIT: Final[int] = 200
+MAX_LIST_LIMIT: Final[int] = 500

@@ -6,9 +6,9 @@ global handler in :mod:`app.core.errors` translates those into the
 ``read_only_field`` envelope (FRD §4).
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
 from app.services.tasks.enums import Status
 
@@ -42,6 +42,14 @@ class TaskResponse(BaseModel):
     status: Status
     priority: int
     created_at: datetime
+
+    @field_serializer("created_at")
+    def _serialize_created_at(self, dt: datetime) -> str:
+        # SQLite strips tzinfo on roundtrip; the column is always written
+        # with datetime.now(UTC), so attaching UTC on the way out preserves
+        # the FRD §2.4 invariant (RFC 3339 with explicit ``Z`` suffix).
+        aware = dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
+        return aware.isoformat().replace("+00:00", "Z")
 
 
 class TaskListResponse(BaseModel):
