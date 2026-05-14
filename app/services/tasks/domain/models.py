@@ -34,6 +34,14 @@ class Task(SQLModel, table=True):
         return title.strip().casefold()
 
     @classmethod
+    def clean_title(cls, title: str) -> tuple[str, str]:
+        """Return ``(stripped_title, title_key)``; raise ``ValueError`` if empty."""
+        title_key = cls.normalize_title(title)
+        if not title_key:
+            raise ValueError("title must not be empty")
+        return title.strip(), title_key
+
+    @classmethod
     def from_input(
         cls,
         *,
@@ -43,11 +51,9 @@ class Task(SQLModel, table=True):
         priority: int,
     ) -> "Task":
         """Build a Task from caller input, applying normalisation invariants."""
-        title_key = cls.normalize_title(title)
-        if not title_key:
-            raise ValueError("title must not be empty")
+        cleaned_title, title_key = cls.clean_title(title)
         return cls(
-            title=title.strip(),
+            title=cleaned_title,
             title_key=title_key,
             description=description,
             status=status,
