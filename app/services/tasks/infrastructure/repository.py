@@ -10,12 +10,13 @@ from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
-from sqlmodel import Session
+from sqlmodel import Session, col
 
+from app.core.constants import OrderDirection
+from app.services.tasks.constants import Status, TaskSortField
 from app.services.tasks.domain.models import Task
-from app.services.tasks.enums import Status
 from app.services.tasks.errors import DuplicateTaskError, TaskNotFoundError
-from app.services.tasks.interfaces import MUTABLE_FIELDS, Sort, TaskRepositoryInterface
+from app.services.tasks.interfaces import MUTABLE_FIELDS, TaskRepositoryInterface
 
 
 class SQLModelTaskRepository(TaskRepositoryInterface):
@@ -51,26 +52,21 @@ class SQLModelTaskRepository(TaskRepositoryInterface):
         self,
         *,
         statuses: list[Status] | None,
-        sort: Sort,
+        order_by: TaskSortField,
+        order_dir: OrderDirection,
         limit: int,
         offset: int,
     ) -> tuple[list[Task], int]:
         base = select(Task)
         count_stmt = select(func.count()).select_from(Task)
         if statuses:
-            base = base.where(Task.status.in_(statuses))  # type: ignore[attr-defined]
-            count_stmt = count_stmt.where(Task.status.in_(statuses))  # type: ignore[attr-defined]
+            base = base.where(col(Task.status).in_(statuses))
+            count_stmt = count_stmt.where(col(Task.status).in_(statuses))
 
-        order_col = (
-            Task.priority.desc()  # type: ignore[attr-defined]
-            if sort == "priority_desc"
-            else Task.priority.asc()  # type: ignore[attr-defined]
-        )
-        items_stmt = (
-            base.order_by(order_col, Task.created_at.asc())  # type: ignore[attr-defined]
-            .offset(offset)
-            .limit(limit)
-        )
+        # ``order_by`` is a StrEnum whose value IS the column attribute name.
+        sort_col = col(getattr(Task, order_by))
+        ordered = sort_col.desc() if order_dir is OrderDirection.DESC else sort_col.asc()
+        items_stmt = base.order_by(ordered, col(Task.created_at).asc()).offset(offset).limit(limit)
 
         items = list(self._session.scalars(items_stmt).all())
         total = int(self._session.scalar(count_stmt) or 0)
@@ -84,32 +80,34 @@ class SQLModelTaskRepository(TaskRepositoryInterface):
         description: str | None,
         status: Status,
         priority: int,
-    ) -> Task:
+    ) -> tuple[Task, Task]:
         task = self.get(task_id)
+        previous = task.snapshot()
         task.title, task.title_key = Task.clean_title(title)
         task.description = description
         task.status = status
         task.priority = priority
         self._commit_or_translate(title)
         self._session.refresh(task)
-        return task
+        return previous, task
 
-    def patch(self, task_id: int, **fields: Any) -> Task:
+    def patch(self, task_id: int, **fields: Any) -> tuple[Task, Task]:
         unknown = set(fields) - MUTABLE_FIELDS
         if unknown:
             raise ValueError(f"unknown patch fields: {sorted(unknown)}")
         task = self.get(task_id)
+        previous = task.snapshot()
         if "title" in fields:
             task.title, task.title_key = Task.clean_title(fields.pop("title"))
         for field, value in fields.items():
             setattr(task, field, value)
         self._commit_or_translate(task.title)
         self._session.refresh(task)
-        return task
+        return previous, task
 
     def delete(self, task_id: int) -> Task:
         task = self.get(task_id)
-        snapshot = Task.model_validate(task.model_dump())
+        snapshot = task.snapshot()
         self._session.delete(task)
         self._session.commit()
         return snapshot

@@ -1,0 +1,21 @@
+# Local container for development and Hurl E2E smoke tests.
+# Per FRD §6.1 + TIS §12, port publishing is opt-in; we expose 8000 here
+# specifically so ``hurl --test`` and ``curl /healthz`` can reach the service.
+
+services:
+  task-service:
+    # ``APP_ENV=prod`` and ``TZ=UTC`` are baked into the image
+    # (see ``docker/Dockerfile``); not duplicated here to avoid drift.
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: internal-task-service:dev
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz').read()"]
+      interval: 5s
+      timeout: 2s
+      retries: 5
+      # Cold Python + FastAPI lifespan can exceed 3s on constrained CI runners.
+      start_period: 10s

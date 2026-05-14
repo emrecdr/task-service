@@ -11,8 +11,10 @@ from typing import Any
 import pytest
 from fastapi import BackgroundTasks
 
+from app.core.constants import OrderDirection
 from app.core.event_bus import Event, EventBus
 from app.services.tasks.application.service import TaskService
+from app.services.tasks.constants import Status, TaskSortField
 from app.services.tasks.domain.events import (
     TaskCompleted,
     TaskCreated,
@@ -21,9 +23,8 @@ from app.services.tasks.domain.events import (
     TaskUpdated,
 )
 from app.services.tasks.domain.models import Task
-from app.services.tasks.enums import Status
 from app.services.tasks.errors import EmptyUpdateError, TaskNotFoundError
-from app.services.tasks.interfaces import Sort, TaskRepositoryInterface
+from app.services.tasks.interfaces import TaskRepositoryInterface
 
 
 class FakeRepo(TaskRepositoryInterface):
@@ -56,7 +57,8 @@ class FakeRepo(TaskRepositoryInterface):
         self,
         *,
         statuses: list[Status] | None,
-        sort: Sort,
+        order_by: TaskSortField,
+        order_dir: OrderDirection,
         limit: int,
         offset: int,
     ) -> tuple[list[Task], int]:
@@ -71,25 +73,26 @@ class FakeRepo(TaskRepositoryInterface):
         description: str | None,
         status: Status,
         priority: int,
-    ) -> Task:
+    ) -> tuple[Task, Task]:
         task = self.get(task_id)
+        previous = task.snapshot()
         task.title, task.title_key = Task.clean_title(title)
         task.description = description
         task.status = status
         task.priority = priority
-        return task
+        return previous, task
 
-    def patch(self, task_id: int, **fields: Any) -> Task:
+    def patch(self, task_id: int, **fields: Any) -> tuple[Task, Task]:
         task = self.get(task_id)
+        previous = task.snapshot()
         if "title" in fields:
             task.title, task.title_key = Task.clean_title(fields.pop("title"))
         for field, value in fields.items():
             setattr(task, field, value)
-        return task
+        return previous, task
 
     def delete(self, task_id: int) -> Task:
-        task = self._rows.pop(task_id)
-        return Task.model_validate(task.model_dump())
+        return self._rows.pop(task_id).snapshot()
 
 
 class RecordingBus(EventBus):

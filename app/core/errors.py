@@ -104,10 +104,11 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(RequestValidationError)
     async def _request_validation_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
-        # Detect attempts to set server-owned fields (id, created_at) on a
-        # PUT/PATCH body — they manifest as ``extra_forbidden`` errors because
-        # the DTOs use ``model_config = ConfigDict(extra="forbid")``.
-        for err in exc.errors():
+        # Strip ``ctx`` — it holds the non-JSON-serialisable source exception; ``msg`` carries the text.
+        errors = [{key: value for key, value in err.items() if key != "ctx"} for err in exc.errors()]
+
+        # Server-owned fields on PUT/PATCH surface as ``extra_forbidden`` (DTOs use ``extra="forbid"``).
+        for err in errors:
             loc = err.get("loc", ())
             if err.get("type") == "extra_forbidden" and loc and loc[-1] in _SERVER_OWNED_FIELDS:
                 return _envelope(
@@ -121,6 +122,6 @@ def register_exception_handlers(app: FastAPI) -> None:
             request=request,
             code=ErrorCode.VALIDATION_ERROR,
             message="Request validation failed.",
-            details={"errors": exc.errors()},
+            details={"errors": errors},
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         )

@@ -17,7 +17,7 @@ from uuid import UUID, uuid4
 from fastapi import BackgroundTasks
 from pydantic import BaseModel, ConfigDict, Field
 
-EventHandler = Callable[[Any], Any]
+type EventHandler = Callable[[Any], Any]
 
 
 class Event(BaseModel):

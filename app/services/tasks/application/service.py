@@ -7,9 +7,6 @@ Owns the event-firing rules from FRD §5.1:
 - ``TaskStatusChanged`` only when ``status`` was among the changed fields.
 - ``TaskCompleted`` only when ``status`` transitioned to ``completed``.
 - ``TaskDeleted`` after a successful ``delete``, carrying the snapshot.
-
-The previous-state snapshot is taken via ``model_validate(model_dump())`` so
-the in-place patch can mutate the row without losing the pre-change values.
 """
 
 from typing import Any
@@ -17,6 +14,8 @@ from typing import Any
 from fastapi import BackgroundTasks
 
 from app.core.event_bus import EventBus
+from app.services.tasks.application.dto import TaskListParams
+from app.services.tasks.constants import Status
 from app.services.tasks.domain.events import (
     TaskCompleted,
     TaskCreated,
@@ -25,9 +24,8 @@ from app.services.tasks.domain.events import (
     TaskUpdated,
 )
 from app.services.tasks.domain.models import Task
-from app.services.tasks.enums import Status
 from app.services.tasks.errors import EmptyUpdateError
-from app.services.tasks.interfaces import MUTABLE_FIELDS, Sort, TaskRepositoryInterface
+from app.services.tasks.interfaces import MUTABLE_FIELDS, TaskRepositoryInterface
 
 
 class TaskService:
@@ -51,15 +49,14 @@ class TaskService:
     def get(self, task_id: int) -> Task:
         return self._repo.get(task_id)
 
-    def list(
-        self,
-        *,
-        statuses: list[Status] | None,
-        sort: Sort,
-        limit: int,
-        offset: int,
-    ) -> tuple[list[Task], int]:
-        return self._repo.list(statuses=statuses, sort=sort, limit=limit, offset=offset)
+    def list(self, *, params: TaskListParams) -> tuple[list[Task], int]:
+        return self._repo.list(
+            statuses=params.statuses,
+            order_by=params.order_by,
+            order_dir=params.order_dir,
+            limit=params.limit,
+            offset=params.offset,
+        )
 
     async def replace(
         self,
@@ -71,8 +68,7 @@ class TaskService:
         priority: int,
         background_tasks: BackgroundTasks,
     ) -> Task:
-        previous = self._snapshot(self._repo.get(task_id))
-        updated = self._repo.replace(
+        previous, updated = self._repo.replace(
             task_id,
             title=title,
             description=description,
@@ -91,8 +87,7 @@ class TaskService:
     ) -> Task:
         if not fields:
             raise EmptyUpdateError()
-        previous = self._snapshot(self._repo.get(task_id))
-        updated = self._repo.patch(task_id, **fields)
+        previous, updated = self._repo.patch(task_id, **fields)
         await self._publish_update_events(previous, updated, background_tasks)
         return updated
 
@@ -105,10 +100,6 @@ class TaskService:
         snapshot = self._repo.delete(task_id)
         await self._events.publish(TaskDeleted(task=snapshot), background_tasks)
         return snapshot
-
-    @staticmethod
-    def _snapshot(task: Task) -> Task:
-        return Task.model_validate(task.model_dump())
 
     async def _publish_update_events(
         self,

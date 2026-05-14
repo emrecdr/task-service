@@ -48,7 +48,7 @@ def init_schema() -> None:
 
 
 @contextmanager
-def session_factory() -> Generator[Session, None, None]:
+def session_factory() -> Generator[Session]:
     """Yield a SQLModel ``Session`` bound to the module-level engine."""
     with Session(engine) as session:
         yield session

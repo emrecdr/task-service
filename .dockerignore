@@ -2,13 +2,41 @@
 .venv
 .pytest_cache
 .mypy_cache
+.hypothesis
 .ruff_cache
 __pycache__
+*.py[cod]
 tests
+app/services/*/tests
 docs
 reports
 docker
 Makefile
+
+# Coverage / build artefacts
+.coverage
+coverage.xml
+htmlcov
+build
+dist
+*.egg-info
+
+# Agent / IDE state — never belongs in an image
+.claude
+.devt
+.specify
+.conductor
+.dev-team
+.bitbucket
+.worktrees
+.github
+graphify-out
+.history
+.idea
+.vscode
+.DS_Store
+
+# Local env files; the image hardcodes APP_ENV=prod and CI supplies secrets
 .env
 .env.*
 !.env.example

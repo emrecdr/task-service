@@ -1,20 +1,10 @@
-"""Structured logging via ``structlog`` plus the request-ID middleware.
-
-The two concerns live together because the middleware exists solely to bind a
-request-scoped UUID into ``structlog``'s context — every log line emitted
-during the request then carries ``request_id`` automatically (FRD §7, TIS §7.3
-and §7.4).
-"""
+"""Structured logging via ``structlog`` (FRD §7, TIS §7.3)."""
 
 from __future__ import annotations
 
 import sys
-from uuid import uuid4
 
 import structlog
-from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
-from starlette.requests import Request
-from starlette.responses import Response
 
 from app.core.config import settings
 
@@ -48,27 +38,3 @@ def setup_logging() -> None:
 
 
 logger = structlog.get_logger("app")
-
-
-class RequestIDMiddleware(BaseHTTPMiddleware):
-    """Generate/propagate ``X-Request-ID`` and bind it to the log context.
-
-    A UUIDv4 is generated when the header is absent. The value is:
-
-    1. attached to ``request.state.request_id`` so handlers (and the global
-       exception handler) can read it,
-    2. bound into ``structlog.contextvars`` so every log line for the request
-       carries it,
-    3. echoed back to the client on the response.
-    """
-
-    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
-        rid = request.headers.get("X-Request-ID") or str(uuid4())
-        request.state.request_id = rid
-        structlog.contextvars.bind_contextvars(request_id=rid)
-        try:
-            response: Response = await call_next(request)
-        finally:
-            structlog.contextvars.clear_contextvars()
-        response.headers["X-Request-ID"] = rid
-        return response

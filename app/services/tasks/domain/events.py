@@ -7,8 +7,8 @@ completion can subscribe to it without filtering status payloads.
 """
 
 from app.core.event_bus import Event
+from app.services.tasks.constants import Status
 from app.services.tasks.domain.models import Task
-from app.services.tasks.enums import Status
 
 
 class TaskCreated(Event):

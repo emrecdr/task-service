@@ -6,18 +6,22 @@ implementation forgetting a method fails at *instantiation* time with a clear
 """
 
 from abc import ABC, abstractmethod
-from typing import Final, Literal
+from typing import Final
 
+from app.core.constants import OrderDirection
+from app.services.tasks.constants import Status, TaskSortField
 from app.services.tasks.domain.models import Task
-from app.services.tasks.enums import Status
-
-Sort = Literal["priority_asc", "priority_desc"]
 
 # Fields the repository accepts for patch() and the service uses for change-detection.
 MUTABLE_FIELDS: Final[frozenset[str]] = frozenset({"title", "description", "status", "priority"})
 
 
 class TaskRepositoryInterface(ABC):
+    """``replace`` and ``patch`` return ``(pre_mutation_snapshot, updated_row)``
+    from a single fetch so the service can fire change-detection events without
+    a second read.
+    """
+
     @abstractmethod
     def add(
         self,
@@ -36,7 +40,8 @@ class TaskRepositoryInterface(ABC):
         self,
         *,
         statuses: list[Status] | None,
-        sort: Sort,
+        order_by: TaskSortField,
+        order_dir: OrderDirection,
         limit: int,
         offset: int,
     ) -> tuple[list[Task], int]: ...
@@ -50,10 +55,10 @@ class TaskRepositoryInterface(ABC):
         description: str | None,
         status: Status,
         priority: int,
-    ) -> Task: ...
+    ) -> tuple[Task, Task]: ...
 
     @abstractmethod
-    def patch(self, task_id: int, **fields: object) -> Task: ...
+    def patch(self, task_id: int, **fields: object) -> tuple[Task, Task]: ...
 
     @abstractmethod
     def delete(self, task_id: int) -> Task: ...

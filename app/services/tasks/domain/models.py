@@ -11,18 +11,25 @@ from datetime import UTC, datetime
 
 from sqlmodel import Field, SQLModel
 
-from app.services.tasks.enums import Status
+from app.services.tasks.constants import (
+    DESCRIPTION_MAX_LENGTH,
+    PRIORITY_MAX,
+    PRIORITY_MIN,
+    TITLE_MAX_LENGTH,
+    TITLE_MIN_LENGTH,
+    Status,
+)
 
 
 class Task(SQLModel, table=True):
     __tablename__ = "tasks"
 
     id: int | None = Field(default=None, primary_key=True)
-    title: str = Field(min_length=1, max_length=200)
-    title_key: str = Field(index=True, unique=True, max_length=200)
-    description: str | None = Field(default=None, max_length=2000)
+    title: str = Field(min_length=TITLE_MIN_LENGTH, max_length=TITLE_MAX_LENGTH)
+    title_key: str = Field(index=True, unique=True, max_length=TITLE_MAX_LENGTH)
+    description: str | None = Field(default=None, max_length=DESCRIPTION_MAX_LENGTH)
     status: Status = Field(default=Status.NEW)
-    priority: int = Field(ge=1, le=5)
+    priority: int = Field(ge=PRIORITY_MIN, le=PRIORITY_MAX)
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC),
         nullable=False,
@@ -59,3 +66,7 @@ class Task(SQLModel, table=True):
             status=status,
             priority=priority,
         )
+
+    def snapshot(self) -> "Task":
+        """Detached copy for event payloads — fresh instance with no session state."""
+        return Task.model_validate(self.model_dump())

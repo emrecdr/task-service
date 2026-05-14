@@ -1,6 +1,6 @@
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from importlib.metadata import PackageNotFoundError, version
-from typing import AsyncIterator
 
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
@@ -10,18 +10,10 @@ from app.core.database import init_schema
 from app.core.errors import register_exception_handlers
 from app.core.event_bus import EventBus
 from app.core.health import router as health_router
-from app.core.logging import RequestIDMiddleware, logger, setup_logging
+from app.core.logging import logger, setup_logging
+from app.core.middleware import RequestIDMiddleware
 from app.services.tasks.api.v1.router import router as tasks_router
-from app.services.tasks.domain.events import (
-    TaskCompleted,
-    TaskCreated,
-    TaskDeleted,
-    TaskStatusChanged,
-    TaskUpdated,
-)
-from app.services.tasks.infrastructure.listeners import log_event
-
-_TASK_EVENTS = (TaskCreated, TaskUpdated, TaskStatusChanged, TaskCompleted, TaskDeleted)
+from app.services.tasks.infrastructure.listeners import register_listeners as register_task_listeners
 
 
 def _resolve_version() -> str:
@@ -41,8 +33,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     setup_logging()
     init_schema()
     bus = EventBus()
-    for event_type in _TASK_EVENTS:
-        bus.subscribe(event_type, log_event)
+    register_task_listeners(bus)
     app.state.event_bus = bus
     logger.info("startup_complete", app_env=settings.app_env)
     yield

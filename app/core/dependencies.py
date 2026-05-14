@@ -15,7 +15,7 @@ from app.core.database import session_factory
 from app.core.event_bus import EventBus
 
 
-def get_session() -> Generator[Session, None, None]:
+def get_session() -> Generator[Session]:
     """Yield a SQLModel session for the request lifetime."""
     with session_factory() as session:
         yield session

@@ -10,8 +10,13 @@ on the decorator drives both the OpenAPI schema and the actual conversion
 (via ``TaskResponse.model_config.from_attributes=True``).
 """
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, status
 
+from app.core.openapi_responses import (
+    CONFLICT_RESPONSE,
+    NOT_FOUND_RESPONSE,
+    VALIDATION_RESPONSE,
+)
 from app.services.tasks.application.dto import (
     TaskCreate,
     TaskListResponse,
@@ -19,15 +24,24 @@ from app.services.tasks.application.dto import (
     TaskResponse,
 )
 from app.services.tasks.application.service import TaskService
-from app.services.tasks.dependencies import get_task_service
+from app.services.tasks.dependencies import TaskQueryParamsDep, get_task_service
 from app.services.tasks.domain.models import Task
-from app.services.tasks.enums import Status
-from app.services.tasks.interfaces import Sort
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
+# ======================================================= #
+# ----- Task Create Route ----- #
 
-@router.post("", status_code=status.HTTP_201_CREATED, response_model=TaskResponse)
+
+@router.post(
+    "",
+    status_code=status.HTTP_201_CREATED,
+    response_model=TaskResponse,
+    responses={
+        409: CONFLICT_RESPONSE,
+        422: VALIDATION_RESPONSE,
+    },
+)
 async def create_task(
     body: TaskCreate,
     background_tasks: BackgroundTasks,
@@ -36,19 +50,39 @@ async def create_task(
     return await service.create(**body.model_dump(), background_tasks=background_tasks)
 
 
-@router.get("", response_model=TaskListResponse)
+# ======================================================= #
+# ----- Task Listing Route ----- #
+
+
+@router.get(
+    "",
+    response_model=TaskListResponse,
+    responses={422: VALIDATION_RESPONSE},
+)
 def list_tasks(
+    query_params: TaskQueryParamsDep,
     service: TaskService = Depends(get_task_service),
-    statuses: list[Status] | None = Query(default=None, alias="status"),
-    sort: Sort = "priority_desc",
-    limit: int = Query(default=50, ge=1, le=500),
-    offset: int = Query(default=0, ge=0),
-) -> dict[str, object]:
-    items, total = service.list(statuses=statuses, sort=sort, limit=limit, offset=offset)
-    return {"items": items, "total": total, "limit": limit, "offset": offset}
+) -> TaskListResponse:
+    items, total = service.list(params=query_params)
+    return TaskListResponse.model_validate(
+        {
+            "items": items,
+            "total": total,
+            "limit": query_params.limit,
+            "offset": query_params.offset,
+        }
+    )
 
 
-@router.get("/{task_id}", response_model=TaskResponse)
+# ======================================================= #
+# ----- Task Get By Id Route ----- #
+
+
+@router.get(
+    "/{task_id}",
+    response_model=TaskResponse,
+    responses={404: NOT_FOUND_RESPONSE},
+)
 def get_task(
     task_id: int,
     service: TaskService = Depends(get_task_service),
@@ -56,7 +90,19 @@ def get_task(
     return service.get(task_id)
 
 
-@router.put("/{task_id}", response_model=TaskResponse)
+# ======================================================= #
+# ----- Task Update Fully By Id Route ----- #
+
+
+@router.put(
+    "/{task_id}",
+    response_model=TaskResponse,
+    responses={
+        404: NOT_FOUND_RESPONSE,
+        409: CONFLICT_RESPONSE,
+        422: VALIDATION_RESPONSE,
+    },
+)
 async def replace_task(
     task_id: int,
     body: TaskCreate,
@@ -66,7 +112,19 @@ async def replace_task(
     return await service.replace(task_id, **body.model_dump(), background_tasks=background_tasks)
 
 
-@router.patch("/{task_id}", response_model=TaskResponse)
+# ======================================================= #
+# ----- Task Update Partially By Id Route ----- #
+
+
+@router.patch(
+    "/{task_id}",
+    response_model=TaskResponse,
+    responses={
+        404: NOT_FOUND_RESPONSE,
+        409: CONFLICT_RESPONSE,
+        422: VALIDATION_RESPONSE,
+    },
+)
 async def patch_task(
     task_id: int,
     body: TaskPatch,
@@ -80,7 +138,15 @@ async def patch_task(
     )
 
 
-@router.delete("/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
+# ======================================================= #
+# ----- Task Delete By Id  Route ----- #
+
+
+@router.delete(
+    "/{task_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={404: NOT_FOUND_RESPONSE},
+)
 async def delete_task(
     task_id: int,
     background_tasks: BackgroundTasks,
