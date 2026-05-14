@@ -6,12 +6,15 @@ implementation forgetting a method fails at *instantiation* time with a clear
 """
 
 from abc import ABC, abstractmethod
-from typing import Literal
+from typing import Final, Literal
 
 from app.services.tasks.domain.models import Task
 from app.services.tasks.enums import Status
 
 Sort = Literal["priority_asc", "priority_desc"]
+
+# Fields the repository accepts for patch() and the service uses for change-detection.
+MUTABLE_FIELDS: Final[frozenset[str]] = frozenset({"title", "description", "status", "priority"})
 
 
 class TaskRepositoryInterface(ABC):

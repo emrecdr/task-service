@@ -52,7 +52,7 @@ class AppError(Exception):
 
 
 class ValidationError(AppError):
-    status_code = status.HTTP_422_UNPROCESSABLE_ENTITY
+    status_code = status.HTTP_422_UNPROCESSABLE_CONTENT
     error_code = ErrorCode.VALIDATION_ERROR
 
 
@@ -115,12 +115,12 @@ def register_exception_handlers(app: FastAPI) -> None:
                     code=ErrorCode.READ_ONLY_FIELD,
                     message="Field is server-managed and cannot be set by the caller.",
                     details={"field": loc[-1]},
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 )
         return _envelope(
             request=request,
             code=ErrorCode.VALIDATION_ERROR,
             message="Request validation failed.",
             details={"errors": exc.errors()},
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         )

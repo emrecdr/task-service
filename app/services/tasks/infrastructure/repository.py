@@ -15,10 +15,7 @@ from sqlmodel import Session
 from app.services.tasks.domain.models import Task
 from app.services.tasks.enums import Status
 from app.services.tasks.errors import DuplicateTaskError, TaskNotFoundError
-from app.services.tasks.interfaces import Sort, TaskRepositoryInterface
-
-
-_MUTABLE_FIELDS = frozenset({"title", "description", "status", "priority"})
+from app.services.tasks.interfaces import MUTABLE_FIELDS, Sort, TaskRepositoryInterface
 
 
 class SQLModelTaskRepository(TaskRepositoryInterface):
@@ -98,7 +95,7 @@ class SQLModelTaskRepository(TaskRepositoryInterface):
         return task
 
     def patch(self, task_id: int, **fields: Any) -> Task:
-        unknown = set(fields) - _MUTABLE_FIELDS
+        unknown = set(fields) - MUTABLE_FIELDS
         if unknown:
             raise ValueError(f"unknown patch fields: {sorted(unknown)}")
         task = self.get(task_id)
