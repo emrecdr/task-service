@@ -1,0 +1,35 @@
+"""Five domain events for the tasks feature (FRD §5.1, TIS §3.2).
+
+All five ship from Phase 1. ``TaskCompleted`` is a convenience event derived
+from ``TaskStatusChanged`` — future listeners that only care about
+completion can subscribe to it without filtering status payloads.
+``TaskUpdated`` is the catch-all hook for audit and cache-invalidation use.
+"""
+
+from app.core.event_bus import Event
+from app.services.tasks.domain.models import Task
+from app.services.tasks.enums import Status
+
+
+class TaskCreated(Event):
+    task: Task
+
+
+class TaskUpdated(Event):
+    task: Task
+    previous: Task
+    changed_fields: list[str]
+
+
+class TaskStatusChanged(Event):
+    task: Task
+    from_status: Status
+    to_status: Status
+
+
+class TaskCompleted(Event):
+    task: Task
+
+
+class TaskDeleted(Event):
+    task: Task
