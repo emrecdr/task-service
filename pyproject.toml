@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "internal-task-service"
-version = "0.6.0"
+version = "0.7.0"
 description = "Internal Task Service."
 requires-python = ">=3.13"
 dependencies = [
@@ -73,8 +73,8 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"__init__.py" = ["F401"]            # re-exports are valid here
-"tests/conftest.py" = ["E402"]      # APP_ENV must be set BEFORE app imports
+"__init__.py" = ["F401"]       # re-exports are valid here
+"tests/conftest.py" = ["E402"] # APP_ENV must be set BEFORE app imports
 
 [tool.mypy]
 python_version = "3.13"
@@ -97,9 +97,9 @@ markers = [
 source = ["app"]
 branch = true
 omit = [
-    "app/main.py",       # bootstrap; covered transitively by integration tests
-    "*/__init__.py",     # almost always empty package markers
-    "*/tests/*",         # don't measure test files against themselves
+    "app/main.py",   # bootstrap; covered transitively by integration tests
+    "*/__init__.py", # almost always empty package markers
+    "*/tests/*",     # don't measure test files against themselves
 ]
 
 [tool.coverage.report]
