@@ -37,10 +37,13 @@ def _require_non_blank_title(value: str) -> str:
 
 
 # Reusable Pydantic V2 type alias — bounds + custom validator live with the type,
-# not duplicated on every field declaration.
+# not duplicated on every field declaration. ``pattern=r"\S"`` requires at least
+# one non-whitespace character; it generates ``"pattern": "\\S"`` in the OpenAPI
+# schema so schema-driven fuzzers know ``"\t"`` is not a valid title. The
+# ``AfterValidator`` stays as a defence-in-depth check with a clearer error msg.
 NonBlankTitle = Annotated[
     str,
-    Field(min_length=TITLE_MIN_LENGTH, max_length=TITLE_MAX_LENGTH),
+    Field(min_length=TITLE_MIN_LENGTH, max_length=TITLE_MAX_LENGTH, pattern=r"\S"),
     AfterValidator(_require_non_blank_title),
 ]
 
@@ -55,9 +58,19 @@ class TaskCreate(BaseModel):
 
 
 class TaskPatch(BaseModel):
-    """All fields optional; at least one must be supplied (enforced in service)."""
+    """All fields optional; at least one must be supplied (enforced in service).
 
-    model_config = ConfigDict(extra="forbid")
+    ``json_schema_extra={"minProperties": 1}`` documents the >= 1-field rule in
+    the OpenAPI document so schema-driven fuzzers (schemathesis) treat ``{}`` as
+    negative data. Runtime enforcement still lives in the service layer
+    (``EmptyUpdateError`` → ``empty_update`` envelope) — this is a documentation
+    fix, not a validation change.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={"minProperties": 1},
+    )
 
     title: NonBlankTitle | None = None
     description: str | None = Field(default=None, max_length=DESCRIPTION_MAX_LENGTH)

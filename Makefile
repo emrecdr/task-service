@@ -63,7 +63,20 @@ schemathesis: ## 🎲 Property-based OpenAPI tests via pytest (opt-in; ASGI in-p
 
 # --- Local run -------------------------------------------------------------
 
+# ``access-info`` prints the canonical URL set for any "the server is up" target.
+# Pulled into one place so ``run`` and ``compose-up`` stay in sync.
+define ACCESS_INFO
+	@printf "\n\033[36m✓ Server reachable at http://localhost:$(APP_PORT)\033[0m\n"
+	@printf "  • OpenAPI UI : \033[34mhttp://localhost:$(APP_PORT)/docs\033[0m\n"
+	@printf "  • ReDoc      : \033[34mhttp://localhost:$(APP_PORT)/redoc\033[0m\n"
+	@printf "  • Liveness   : \033[34mhttp://localhost:$(APP_PORT)/healthz\033[0m\n"
+	@printf "  • Readiness  : \033[34mhttp://localhost:$(APP_PORT)/readyz\033[0m\n"
+	@printf "  • Try it     : curl http://localhost:$(APP_PORT)/v1/tasks\n"
+endef
+
 run: port-check-kill ## 🚀 uvicorn --reload on $(APP_PORT)
+	$(ACCESS_INFO)
+	@printf "  • Stop       : Ctrl+C\n\n"
 	uv run uvicorn app.main:app --host 0.0.0.0 --port $(APP_PORT) --reload
 
 # --- Docker ----------------------------------------------------------------
@@ -71,8 +84,11 @@ run: port-check-kill ## 🚀 uvicorn --reload on $(APP_PORT)
 docker-build: ## 🐳 Build the production image ($(DOCKER_IMAGE))
 	docker build -f docker/Dockerfile -t $(DOCKER_IMAGE) .
 
-compose-up: ## 🐳 Build (if changed) and start the container (detached)
-	$(DOCKER_COMPOSE) up -d --build
+compose-up: ## 🐳 Build (if changed) and start the container (detached, healthcheck-gated)
+	$(DOCKER_COMPOSE) up -d --build --wait
+	$(ACCESS_INFO)
+	@printf "  • Logs       : make compose-logs\n"
+	@printf "  • Stop       : make compose-down\n\n"
 
 compose-down: ## 🛑 Stop the container
 	$(DOCKER_COMPOSE) down

@@ -1,10 +1,10 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from importlib.metadata import PackageNotFoundError, version
 
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
 
+from app import __version__
 from app.core.config import settings
 from app.core.database import init_schema
 from app.core.errors import register_exception_handlers
@@ -14,13 +14,6 @@ from app.core.logging import logger, setup_logging
 from app.core.middleware import RequestIDMiddleware
 from app.services.tasks.api.v1.router import router as tasks_router
 from app.services.tasks.infrastructure.listeners import register_listeners as register_task_listeners
-
-
-def _resolve_version() -> str:
-    try:
-        return version("internal-task-service")
-    except PackageNotFoundError:
-        return "0.0.0"
 
 
 def custom_unique_id(route: APIRoute) -> str:
@@ -43,7 +36,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 def create_app() -> FastAPI:
     app = FastAPI(
         title=settings.project_name,
-        version=_resolve_version(),
+        version=__version__,
         lifespan=lifespan,
         generate_unique_id_function=custom_unique_id,
     )

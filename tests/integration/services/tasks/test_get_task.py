@@ -32,3 +32,43 @@ async def test_get_non_integer_id_returns_422(client: AsyncClient) -> None:
     r = await client.get("/v1/tasks/not-an-int")
     assert r.status_code == 422
     assert r.json()["error"]["code"] == "validation_error"
+
+
+# SQLite stores ids as signed 64-bit ints; values past 2**63 - 1 used to crash
+# the driver with OverflowError → 500. The path param is bounded at the router
+# boundary so out-of-range ids are rejected as a clean 422 before any DB call.
+OVERFLOW_TASK_ID = 2**63  # one past signed int64 max
+
+
+@pytest.mark.asyncio
+async def test_get_overflow_id_returns_422(client: AsyncClient) -> None:
+    r = await client.get(f"/v1/tasks/{OVERFLOW_TASK_ID}")
+    assert r.status_code == 422
+    assert r.json()["error"]["code"] == "validation_error"
+
+
+@pytest.mark.asyncio
+async def test_delete_overflow_id_returns_422(client: AsyncClient) -> None:
+    r = await client.delete(f"/v1/tasks/{OVERFLOW_TASK_ID}")
+    assert r.status_code == 422
+    assert r.json()["error"]["code"] == "validation_error"
+
+
+@pytest.mark.asyncio
+async def test_put_overflow_id_returns_422(client: AsyncClient) -> None:
+    r = await client.put(
+        f"/v1/tasks/{OVERFLOW_TASK_ID}",
+        json={"title": "x", "priority": 1},
+    )
+    assert r.status_code == 422
+    assert r.json()["error"]["code"] == "validation_error"
+
+
+@pytest.mark.asyncio
+async def test_patch_overflow_id_returns_422(client: AsyncClient) -> None:
+    r = await client.patch(
+        f"/v1/tasks/{OVERFLOW_TASK_ID}",
+        json={"title": "x"},
+    )
+    assert r.status_code == 422
+    assert r.json()["error"]["code"] == "validation_error"

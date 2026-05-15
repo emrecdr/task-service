@@ -3,7 +3,6 @@
 **Project:** Internal Task Service
 **Document Version:** 1.1
 **Companion to:** `docs/PRD.md`, `docs/FRD.md`
-**Source of Truth:** `docs/Python_Assignment.pdf`
 
 ---
 
@@ -13,23 +12,23 @@ The service follows **simplified Hexagonal Architecture (feature-first)** — ea
 
 ```
                                  ┌──────────────────────────┐
-                                 │       Inbound (HTTP)      │
-                                 │   app/services/tasks/api  │
-                                 │   FastAPI router + DTOs   │
+                                 │       Inbound (HTTP)     │
+                                 │   app/services/tasks/api │
+                                 │   FastAPI router + DTOs  │
                                  └────────────┬─────────────┘
                                               │ calls
                                               ▼
        ┌──────────────────────────┐    ┌──────────────────────┐
-       │  interfaces.py │    │   application/        │
-       │  (ABC contracts)          │◄───┤   TaskService          │
+       │  interfaces.py           │    │   application/       │
+       │  (ABC contracts)         │◄───┤   TaskService        │
        └────────────┬─────────────┘    └─────────┬────────────┘
                     ▲                            │ depends on
                     │ implements                 ▼
        ┌────────────┴─────────────┐    ┌──────────────────────┐
-       │      infrastructure/       │    │       domain/         │
-       │  SQLModelTaskRepository    │    │ Task (SQLModel +     │
-       │  + listeners.py            │    │ table=True)          │
-       │                            │    │ Status enum, events  │
+       │      infrastructure/     │    │       domain/        │
+       │  SQLModelTaskRepository  │    │ Task (SQLModel +     │
+       │  + listeners.py          │    │ table=True)          │
+       │                          │    │ Status enum, events  │
        └──────────────────────────┘    └──────────────────────┘
 ```
 
@@ -147,37 +146,37 @@ task-service/
 
 The implementation rests on a small set of explicitly chosen patterns. Each one solves a named problem; nothing is applied for ceremony.
 
-| Pattern                                  | Where it lives                                                                   | What it buys                                                                                       |
-| ---------------------------------------- | -------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| **Hexagonal Architecture (Ports & Adapters)** — feature-first variant | Whole feature tree under `app/services/tasks/`                                | Substitutable storage, framework isolation, test pyramid                                           |
-| **Repository Pattern** with **ABC-as-Port** | `interfaces.py::TaskRepositoryInterface` + `infrastructure/repository.py`     | Application depends on a contract, not an ORM; Postgres adapter in Phase 2 needs zero domain churn |
-| **Application Service / Use-Case Object** | `application/service.py::TaskService`                                          | All event-firing rules in one place; routes stay thin                                              |
-| **Domain Events** + **Publish/Subscribe Bus** | `domain/events.py` + `core/event_bus.py`                                       | Side-effects (logs, future notifications) are append-only — new listener, no service edit          |
-| **Background Tasks** for post-commit fan-out | `EventBus.publish(event, background_tasks)`                                    | Events fire *after* the DB commit and *before* the HTTP response returns; listeners never block the caller |
-| **Snapshot pattern** for event payloads  | `Task.snapshot()`                                                                | Pre/post-mutation values are captured as detached copies, immune to later session mutations        |
-| **Single Global Exception Handler / Error Envelope** | `core/errors.py::register_exception_handlers`                                  | Domain code raises typed exceptions; HTTP shape is owned by one handler, schema is uniform         |
-| **Factory Method**                       | `Task.from_input()`, `app.main::create_app()`                                    | Object construction owns invariants; the app's wiring is reproducible and testable                 |
-| **Dependency Injection** (Annotated style) | FastAPI `Annotated[X, Depends(...)]` aliases in `core/dependencies.py` and each feature's `dependencies.py` | Wiring is declared at the type level; swapping a collaborator means swapping one alias            |
-| **DTO at the API boundary**              | `application/dto.py` (Pydantic V2 models with `extra="forbid"`)                  | Read-only fields rejected by the framework, not by hand-rolled validators                          |
-| **Reusable Annotated types**             | `NonBlankTitle = Annotated[str, Field(...), AfterValidator(...)]`                | Title bounds and the blank-rejection rule travel together; both DTOs reuse them by reference       |
-| **StrEnum for closed string sets**       | `Status`, `TaskSortField`, `OrderDirection`, `Environment`, `ErrorCode`          | Wire format = symbol value; no `if status_str == "completed"` magic strings anywhere               |
-| **Single Source of Truth for bounds**    | `app/services/tasks/constants.py` (`Final[int]` scalars + StrEnums)              | DTO validation and SQLModel column constraints share one definition; can't drift                  |
-| **Middleware for request-scoped context** | `core/middleware.py::RequestIDMiddleware`                                       | UUIDv4 per request, bound to structlog context vars, echoed on the response — all in one place    |
-| **Lifespan-managed app factory**         | `app.main::lifespan` + `create_app()`                                            | Startup wires logging, schema, event bus, listeners; ASGI test clients can reuse the same factory  |
-| **Operational split: liveness vs readiness** | `core/health.py`: `/healthz` (no I/O) vs `/readyz` (DB round-trip)             | Orchestrator routes traffic on `/readyz`; `/healthz` proves the process is alive without false-positive failures during DB reconnect |
+| Pattern                                                               | Where it lives                                                                                              | What it buys                                                                                                                         |
+| --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| **Hexagonal Architecture (Ports & Adapters)** — feature-first variant | Whole feature tree under `app/services/tasks/`                                                              | Substitutable storage, framework isolation, test pyramid                                                                             |
+| **Repository Pattern** with **ABC-as-Port**                           | `interfaces.py::TaskRepositoryInterface` + `infrastructure/repository.py`                                   | Application depends on a contract, not an ORM; Postgres adapter in Phase 2 needs zero domain churn                                   |
+| **Application Service / Use-Case Object**                             | `application/service.py::TaskService`                                                                       | All event-firing rules in one place; routes stay thin                                                                                |
+| **Domain Events** + **Publish/Subscribe Bus**                         | `domain/events.py` + `core/event_bus.py`                                                                    | Side-effects (logs, future notifications) are append-only — new listener, no service edit                                            |
+| **Background Tasks** for post-commit fan-out                          | `EventBus.publish(event, background_tasks)`                                                                 | Events fire _after_ the DB commit and _before_ the HTTP response returns; listeners never block the caller                           |
+| **Snapshot pattern** for event payloads                               | `Task.snapshot()`                                                                                           | Pre/post-mutation values are captured as detached copies, immune to later session mutations                                          |
+| **Single Global Exception Handler / Error Envelope**                  | `core/errors.py::register_exception_handlers`                                                               | Domain code raises typed exceptions; HTTP shape is owned by one handler, schema is uniform                                           |
+| **Factory Method**                                                    | `Task.from_input()`, `app.main::create_app()`                                                               | Object construction owns invariants; the app's wiring is reproducible and testable                                                   |
+| **Dependency Injection** (Annotated style)                            | FastAPI `Annotated[X, Depends(...)]` aliases in `core/dependencies.py` and each feature's `dependencies.py` | Wiring is declared at the type level; swapping a collaborator means swapping one alias                                               |
+| **DTO at the API boundary**                                           | `application/dto.py` (Pydantic V2 models with `extra="forbid"`)                                             | Read-only fields rejected by the framework, not by hand-rolled validators                                                            |
+| **Reusable Annotated types**                                          | `NonBlankTitle = Annotated[str, Field(...), AfterValidator(...)]`                                           | Title bounds and the blank-rejection rule travel together; both DTOs reuse them by reference                                         |
+| **StrEnum for closed string sets**                                    | `Status`, `TaskSortField`, `OrderDirection`, `Environment`, `ErrorCode`                                     | Wire format = symbol value; no `if status_str == "completed"` magic strings anywhere                                                 |
+| **Single Source of Truth for bounds**                                 | `app/services/tasks/constants.py` (`Final[int]` scalars + StrEnums)                                         | DTO validation and SQLModel column constraints share one definition; can't drift                                                     |
+| **Middleware for request-scoped context**                             | `core/middleware.py::RequestIDMiddleware`                                                                   | UUIDv4 per request, bound to structlog context vars, echoed on the response — all in one place                                       |
+| **Lifespan-managed app factory**                                      | `app.main::lifespan` + `create_app()`                                                                       | Startup wires logging, schema, event bus, listeners; ASGI test clients can reuse the same factory                                    |
+| **Operational split: liveness vs readiness**                          | `core/health.py`: `/healthz` (no I/O) vs `/readyz` (DB round-trip)                                          | Orchestrator routes traffic on `/readyz`; `/healthz` proves the process is alive without false-positive failures during DB reconnect |
 
 ### 3.1 Layer responsibilities
 
 Each layer answers exactly one question. Imports always flow inward toward `domain/`.
 
-| Layer            | Module                                | Answers                                          | May import                                              | Must NOT import                            |
-| ---------------- | ------------------------------------- | ------------------------------------------------ | ------------------------------------------------------- | ------------------------------------------ |
-| **Domain**       | `services/tasks/domain/`              | "What is a Task? What events exist?"             | stdlib, `pydantic`, `sqlmodel`, `app.core.*`             | `fastapi`                                   |
-| **Interfaces**   | `services/tasks/interfaces.py`        | "What can the application ask of storage?"      | `domain/`                                                | `infrastructure/`, `fastapi`                |
-| **Application**  | `services/tasks/application/`         | "How does a use-case run end-to-end?"           | `domain/`, `interfaces.py`                               | `infrastructure/`, `fastapi`                |
-| **Infrastructure** | `services/tasks/infrastructure/`    | "How does this contract talk to SQLModel / logs?" | Anything in the feature + DB helpers from `app.core`     | —                                           |
-| **API**          | `services/tasks/api/`                 | "How does HTTP map to a use-case?"              | `application/`, `dependencies.py`                        | Directly into `infrastructure/`             |
-| **Core**         | `app/core/`                           | Cross-cutting: config, errors, bus, logging, middleware, health, DB session | stdlib + third-party                                    | Any individual `services/<feature>/`        |
+| Layer              | Module                           | Answers                                                                     | May import                                           | Must NOT import                      |
+| ------------------ | -------------------------------- | --------------------------------------------------------------------------- | ---------------------------------------------------- | ------------------------------------ |
+| **Domain**         | `services/tasks/domain/`         | "What is a Task? What events exist?"                                        | stdlib, `pydantic`, `sqlmodel`, `app.core.*`         | `fastapi`                            |
+| **Interfaces**     | `services/tasks/interfaces.py`   | "What can the application ask of storage?"                                  | `domain/`                                            | `infrastructure/`, `fastapi`         |
+| **Application**    | `services/tasks/application/`    | "How does a use-case run end-to-end?"                                       | `domain/`, `interfaces.py`                           | `infrastructure/`, `fastapi`         |
+| **Infrastructure** | `services/tasks/infrastructure/` | "How does this contract talk to SQLModel / logs?"                           | Anything in the feature + DB helpers from `app.core` | —                                    |
+| **API**            | `services/tasks/api/`            | "How does HTTP map to a use-case?"                                          | `application/`, `dependencies.py`                    | Directly into `infrastructure/`      |
+| **Core**           | `app/core/`                      | Cross-cutting: config, errors, bus, logging, middleware, health, DB session | stdlib + third-party                                 | Any individual `services/<feature>/` |
 
 The dependency rule is enforced by review (not import-linter). The single feature in Phase 1 keeps it tractable; if a second feature lands, automated boundary checks become worth their weight.
 
@@ -194,29 +193,29 @@ The `Task` SQLModel row **is** the domain entity (`table=True`). Phase 1 deliber
 **Invariants enforced on the entity itself:**
 
 - `title` is preserved verbatim for display; the canonical uniqueness column is `title_key = title.strip().casefold()` (indexed, UNIQUE).
-- `priority` is bounded `[1, 5]`; `title` length `[1, 200]`; `description` ≤ 2000 chars. Bounds live as `Final[int]` constants in `services/tasks/constants.py` and are imported by both the entity *and* the DTOs — one definition, no drift.
+- `priority` is bounded `[1, 5]`; `title` length `[1, 200]`; `description` ≤ 2000 chars. Bounds live as `Final[int]` constants in `services/tasks/constants.py` and are imported by both the entity _and_ the DTOs — one definition, no drift.
 - `created_at` is server-generated with `default_factory=lambda: datetime.now(UTC)` and is never accepted from the wire (`extra="forbid"` on inbound DTOs rejects it; the global handler converts that to `read_only_field`).
 - Two factory methods sit next to the entity:
-  - `Task.from_input(...)` builds a new row, applying `clean_title()` to enforce the title invariants — this is the *only* way the repository's `add()` constructs a Task.
+  - `Task.from_input(...)` builds a new row, applying `clean_title()` to enforce the title invariants — this is the _only_ way the repository's `add()` constructs a Task.
   - `Task.snapshot()` returns a detached copy (`Task.model_validate(self.model_dump())`) used by the repository to capture pre/post-mutation state for events. Centralising it on the entity eliminated three inline `model_validate(model_dump())` call sites.
 
 ### 4.2 `Status` enum and sort fields
 
-`Status` is a `StrEnum` with values `new`, `in_progress`, `completed` — the value *is* the wire format, so no separate serialisation is required. `TaskSortField` is the same idea for `?order_by=`: a closed set of allowed column names. Both eliminate any string-comparison branching elsewhere in the code.
+`Status` is a `StrEnum` with values `new`, `in_progress`, `completed` — the value _is_ the wire format, so no separate serialisation is required. `TaskSortField` is the same idea for `?order_by=`: a closed set of allowed column names. Both eliminate any string-comparison branching elsewhere in the code.
 
 ### 4.3 Domain events
 
 Five `pydantic.BaseModel` subclasses inheriting from `core.event_bus.Event` (which adds `id: UUID` and `occurred_at: datetime`):
 
-| Event                | Carries                                                          | Fires when                                                                      |
-| -------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| `TaskCreated`        | `task`                                                           | After a successful `POST /v1/tasks`                                              |
-| `TaskUpdated`        | `task`, `previous`, `changed_fields`                              | Any PUT/PATCH that mutated ≥1 mutable field                                     |
-| `TaskStatusChanged`  | `task`, `from_status`, `to_status`                                | When `status` is among the changed fields — fires *in addition to* `TaskUpdated` |
-| `TaskCompleted`      | `task`                                                            | When `status` transitions to `completed` — fires *in addition to* `TaskStatusChanged` |
-| `TaskDeleted`        | `task` (the deleted snapshot)                                     | After a successful DELETE                                                       |
+| Event               | Carries                              | Fires when                                                                            |
+| ------------------- | ------------------------------------ | ------------------------------------------------------------------------------------- |
+| `TaskCreated`       | `task`                               | After a successful `POST /v1/tasks`                                                   |
+| `TaskUpdated`       | `task`, `previous`, `changed_fields` | Any PUT/PATCH that mutated ≥1 mutable field                                           |
+| `TaskStatusChanged` | `task`, `from_status`, `to_status`   | When `status` is among the changed fields — fires _in addition to_ `TaskUpdated`      |
+| `TaskCompleted`     | `task`                               | When `status` transitions to `completed` — fires _in addition to_ `TaskStatusChanged` |
+| `TaskDeleted`       | `task` (the deleted snapshot)        | After a successful DELETE                                                             |
 
-`TaskCompleted` is a *convenience event*: listeners that only care about completion (Slack notifier, metrics counter) subscribe to it directly rather than filtering `TaskStatusChanged` payloads. `TaskUpdated` is the catch-all hook for audit / cache-invalidation listeners.
+`TaskCompleted` is a _convenience event_: listeners that only care about completion (Slack notifier, metrics counter) subscribe to it directly rather than filtering `TaskStatusChanged` payloads. `TaskUpdated` is the catch-all hook for audit / cache-invalidation listeners.
 
 ### 4.4 Feature-level errors
 
@@ -226,9 +225,9 @@ Five `pydantic.BaseModel` subclasses inheriting from `core.event_bus.Event` (whi
 
 ## 5. Repository Interface (Storage Port)
 
-**Purpose.** Define what the application can ask of storage *without* committing to a particular adapter. The application layer depends on this ABC; concrete adapters depend on it implicitly by inheriting.
+**Purpose.** Define what the application can ask of storage _without_ committing to a particular adapter. The application layer depends on this ABC; concrete adapters depend on it implicitly by inheriting.
 
-**Why `ABC + @abstractmethod` over `Protocol`.** A `Protocol` is structurally typed; a missing method only fails when first called (`AttributeError` at runtime). An ABC fails at *instantiation* time with a clear `TypeError: Can't instantiate abstract class ... with abstract methods ...`. The earlier feedback loop is worth the slight rigidity for a small contract.
+**Why `ABC + @abstractmethod` over `Protocol`.** A `Protocol` is structurally typed; a missing method only fails when first called (`AttributeError` at runtime). An ABC fails at _instantiation_ time with a clear `TypeError: Can't instantiate abstract class ... with abstract methods ...`. The earlier feedback loop is worth the slight rigidity for a small contract.
 
 **The contract.** Six methods: `add`, `get`, `list`, `replace`, `patch`, `delete`. The signatures encode three deliberate decisions:
 
@@ -251,12 +250,12 @@ Six methods (`create`, `get`, `list`, `replace`, `patch`, `delete`), all `async 
 **The event-firing rules** (from FRD §5.1, enforced as service-level unit tests):
 
 - `TaskCreated` after every successful `create()`.
-- `TaskUpdated` only when at least one mutable field actually changed — a no-op PATCH (e.g. setting `priority` to its current value) returns the updated row *without* firing any event.
-- `TaskStatusChanged` fires *in addition to* `TaskUpdated` when `status` was among the changed fields.
-- `TaskCompleted` fires *in addition to* the prior two when `status` transitioned specifically to `completed`.
+- `TaskUpdated` only when at least one mutable field actually changed — a no-op PATCH (e.g. setting `priority` to its current value) returns the updated row _without_ firing any event.
+- `TaskStatusChanged` fires _in addition to_ `TaskUpdated` when `status` was among the changed fields.
+- `TaskCompleted` fires _in addition to_ the prior two when `status` transitioned specifically to `completed`.
 - `TaskDeleted` after every successful `delete()`, carrying the snapshot returned by the repository.
 
-The change-detection step iterates `MUTABLE_FIELDS` (not the patched-fields dict) and compares pre- and post-values returned from the repository's tuple contract. This means the service never needs to do a second fetch — the *only* reason it knew the pre-state is because `replace()` / `patch()` already returned both.
+The change-detection step iterates `MUTABLE_FIELDS` (not the patched-fields dict) and compares pre- and post-values returned from the repository's tuple contract. This means the service never needs to do a second fetch — the _only_ reason it knew the pre-state is because `replace()` / `patch()` already returned both.
 
 **`EmptyUpdateError(422)`** is raised at the top of `patch()` when `fields` is empty. The `read_only_field` check lives in the global handler (§8.1) because it's a framework-level rejection — Pydantic's `extra="forbid"` raises it before the route handler is even invoked.
 
@@ -264,13 +263,13 @@ The change-detection step iterates `MUTABLE_FIELDS` (not the patched-fields dict
 
 Five Pydantic V2 models in `application/dto.py`:
 
-| DTO                  | Role                                  | Notable config                                                                                              |
-| -------------------- | ------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `TaskCreate`         | `POST` and `PUT` body                 | `extra="forbid"` rejects `id`/`created_at` and unknown fields; `title: NonBlankTitle`                       |
-| `TaskPatch`          | `PATCH` body                          | All fields optional; `title: NonBlankTitle \| None`; `extra="forbid"`                                       |
-| `TaskResponse`       | All single-task responses             | `from_attributes=True` so the route can return the raw `Task`; `created_at` serialised as RFC 3339 with `Z` |
-| `TaskListResponse`   | `GET /v1/tasks` response              | Wraps `items`, `total`, `limit`, `offset`                                                                   |
-| `TaskListParams`     | Bound query-param container           | Built by the `get_task_query_params` dependency; service layer takes a single typed object, not 5 kwargs    |
+| DTO                | Role                        | Notable config                                                                                              |
+| ------------------ | --------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `TaskCreate`       | `POST` and `PUT` body       | `extra="forbid"` rejects `id`/`created_at` and unknown fields; `title: NonBlankTitle`                       |
+| `TaskPatch`        | `PATCH` body                | All fields optional; `title: NonBlankTitle \| None`; `extra="forbid"`                                       |
+| `TaskResponse`     | All single-task responses   | `from_attributes=True` so the route can return the raw `Task`; `created_at` serialised as RFC 3339 with `Z` |
+| `TaskListResponse` | `GET /v1/tasks` response    | Wraps `items`, `total`, `limit`, `offset`                                                                   |
+| `TaskListParams`   | Bound query-param container | Built by the `get_task_query_params` dependency; service layer takes a single typed object, not 5 kwargs    |
 
 `PUT` deliberately reuses `TaskCreate` (no separate `TaskReplace` class) because PUT requires every field — there's nothing to add.
 
@@ -289,7 +288,7 @@ Five Pydantic V2 models in `application/dto.py`:
 Implements `TaskRepositoryInterface` against SQLModel sessions. The adapter is responsible for three concerns the application layer must not see:
 
 1. **Translating driver errors into domain errors.** `IntegrityError` whose payload contains `"title_key"` becomes `DuplicateTaskError(details={"title": title})`. Any other `IntegrityError` re-raises so unexpected failures aren't silently mapped to a wrong code. The translation is centralised in `_commit_or_translate(title)` — every write path calls it.
-2. **Honouring the single-fetch tuple contract.** `replace()` and `patch()` capture `previous = task.snapshot()` *before* mutating in place, then return `(previous, task)` after `_commit_or_translate(...)`. The service layer pays exactly one `get()` per write.
+2. **Honouring the single-fetch tuple contract.** `replace()` and `patch()` capture `previous = task.snapshot()` _before_ mutating in place, then return `(previous, task)` after `_commit_or_translate(...)`. The service layer pays exactly one `get()` per write.
 3. **Pagination + sort + filter for `list()`.** The query is built dynamically: optional `WHERE status IN (...)` for filters; primary `ORDER BY <order_by>` using `getattr(Task, order_by)` (`order_by` is a `TaskSortField` StrEnum whose value is the column name); secondary `ORDER BY created_at ASC` as a deterministic tiebreaker; `LIMIT/OFFSET` for pagination. A separate `SELECT COUNT(*)` returns `total`.
 
 **SQLite + StaticPool Phase 1 trade-off.** SQLAlchemy's default pool gives each new connection its own private `:memory:` database — schema created in one connection is invisible to the next. `poolclass=StaticPool` + `connect_args={"check_same_thread": False}` forces every session to share one connection. The cost: writes serialise on that connection (which is why `hurl-e2e` runs with `--jobs 1`). The benefit: the test suite, the app, and the readiness probe all see the same schema. This quirk evaporates the day Postgres replaces SQLite.
@@ -320,7 +319,7 @@ The route handlers carry no business logic — every "if duplicate then…" / "i
 
 ### 8.1 `AppError`, `ErrorCode`, and the global handler
 
-All three concerns — the stable code enum, the exception hierarchy, and the FastAPI handler that converts both `AppError` *and* Pydantic `RequestValidationError` to the envelope — live in **one file** (`core/errors.py`) because they always change together.
+All three concerns — the stable code enum, the exception hierarchy, and the FastAPI handler that converts both `AppError` _and_ Pydantic `RequestValidationError` to the envelope — live in **one file** (`core/errors.py`) because they always change together.
 
 - **`ErrorCode` (StrEnum):** the contract surface (FRD §4). Six values; any consumer can switch on `error.code`.
 - **`AppError` hierarchy:** `AppError` (500/`internal_error`) → `ValidationError` (422), `ConflictError` (409), `NotFoundError` (404). Feature errors (§4.4) inherit from these and pin their own code + default message.
@@ -332,7 +331,7 @@ The `ctx` field is stripped from Pydantic error rows because it carries the non-
 
 **Pattern.** In-memory publish/subscribe.
 
-**API surface.** Three operations: `subscribe(event_type, handler)`, `publish(event, background_tasks)`, and the `Event` base class (`id: UUID`, `occurred_at: datetime`). Subscriptions are stored in a `defaultdict(list)` keyed by event class; `publish()` iterates the handlers for `type(event)` and appends each one to `background_tasks` — so handlers run *after* the HTTP response is sent.
+**API surface.** Three operations: `subscribe(event_type, handler)`, `publish(event, background_tasks)`, and the `Event` base class (`id: UUID`, `occurred_at: datetime`). Subscriptions are stored in a `defaultdict(list)` keyed by event class; `publish()` iterates the handlers for `type(event)` and appends each one to `background_tasks` — so handlers run _after_ the HTTP response is sent.
 
 **Background Tasks integration.** FastAPI's `BackgroundTasks` is the seam: the request handler returns immediately, the response is flushed to the client, then the background tasks run on the same event loop. The bus does not call handlers inline — that would block the response on a slow listener.
 
@@ -349,6 +348,7 @@ The exported `logger` is a `structlog` bound logger; any handler that calls `log
 A Starlette `BaseHTTPMiddleware` subclass with one responsibility: ensure every request has an `X-Request-ID` and that every log line carries it.
 
 **On request:**
+
 1. Read `X-Request-ID` from the inbound headers or generate `str(uuid4())` if absent.
 2. Attach it to `request.state.request_id` so the global exception handler and any route can read it.
 3. Bind it into `structlog.contextvars` so the `merge_contextvars` processor (§8.3) injects it into every log line emitted during the request.

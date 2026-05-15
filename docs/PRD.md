@@ -2,8 +2,7 @@
 
 **Project Name:** Internal Task Service
 **Document Version:** 1.0
-**Status:** Approved for Phase 1 Implementation
-**Source of Truth:** `docs/Python_Assignment.pdf`
+**Status:** Phase 1 Implementation
 
 ---
 

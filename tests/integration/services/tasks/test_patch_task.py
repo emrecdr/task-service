@@ -37,6 +37,17 @@ async def test_patch_empty_body_returns_422_empty_update(
 
 
 @pytest.mark.asyncio
+async def test_patch_schema_documents_min_properties(client: AsyncClient) -> None:
+    # OpenAPI must declare PATCH body as requiring >= 1 field. Without it,
+    # schema-driven fuzzers treat {} as positive data and trip the runtime
+    # empty_update envelope as if it were a server bug (see Phase 2 backlog).
+    r = await client.get("/openapi.json")
+    assert r.status_code == 200
+    task_patch_schema = r.json()["components"]["schemas"]["TaskPatch"]
+    assert task_patch_schema.get("minProperties") == 1
+
+
+@pytest.mark.asyncio
 async def test_patch_rejects_server_owned_id(client: AsyncClient, create_task: Callable[..., Awaitable[int]]) -> None:
     task_id = await create_task("x")
     r = await client.patch(f"/v1/tasks/{task_id}", json={"id": 999})

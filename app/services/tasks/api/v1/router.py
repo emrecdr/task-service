@@ -10,8 +10,11 @@ on the decorator drives both the OpenAPI schema and the actual conversion
 (via ``TaskResponse.model_config.from_attributes=True``).
 """
 
-from fastapi import APIRouter, BackgroundTasks, status
+from typing import Annotated
 
+from fastapi import APIRouter, BackgroundTasks, Path, status
+
+from app.core.constants import INT64_MAX
 from app.core.openapi_responses import (
     CONFLICT_RESPONSE,
     NOT_FOUND_RESPONSE,
@@ -25,6 +28,13 @@ from app.services.tasks.application.dto import (
 )
 from app.services.tasks.dependencies import TaskQueryParamsDep, TaskServiceDep
 from app.services.tasks.domain.models import Task
+
+# Path-bound id type. `le=INT64_MAX` matches the SQLite signed-int64 column
+# ceiling so out-of-range ids are rejected as 422 before reaching the driver.
+# ``format: int64`` is the standard OpenAPI signal for the same bound; some
+# schema-driven test generators (schemathesis) respect ``format`` more
+# reliably than ``maximum`` when shaping integer strategies.
+TaskIdPath = Annotated[int, Path(le=INT64_MAX, json_schema_extra={"format": "int64"})]
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -83,7 +93,7 @@ async def list_tasks(
     responses={404: NOT_FOUND_RESPONSE},
 )
 async def get_task(
-    task_id: int,
+    task_id: TaskIdPath,
     service: TaskServiceDep,
 ) -> Task:
     return await service.get(task_id)
@@ -103,7 +113,7 @@ async def get_task(
     },
 )
 async def replace_task(
-    task_id: int,
+    task_id: TaskIdPath,
     body: TaskCreate,
     background_tasks: BackgroundTasks,
     service: TaskServiceDep,
@@ -125,7 +135,7 @@ async def replace_task(
     },
 )
 async def patch_task(
-    task_id: int,
+    task_id: TaskIdPath,
     body: TaskPatch,
     background_tasks: BackgroundTasks,
     service: TaskServiceDep,
@@ -147,7 +157,7 @@ async def patch_task(
     responses={404: NOT_FOUND_RESPONSE},
 )
 async def delete_task(
-    task_id: int,
+    task_id: TaskIdPath,
     background_tasks: BackgroundTasks,
     service: TaskServiceDep,
 ) -> None:

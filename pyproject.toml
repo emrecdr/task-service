@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "internal-task-service"
-version = "0.7.0"
+dynamic = ["version"]
 description = "Internal Task Service."
 requires-python = ">=3.13"
 dependencies = [
@@ -29,6 +29,9 @@ dev = [
     "pre-commit>=4.0",
     "schemathesis>=3.30",
 ]
+
+[tool.hatch.version]
+path = "app/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]

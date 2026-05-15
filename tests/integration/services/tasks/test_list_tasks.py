@@ -22,7 +22,7 @@ async def test_list_returns_envelope_shape(client: AsyncClient) -> None:
     body = r.json()
     assert set(body.keys()) == {"items", "total", "limit", "offset"}
     assert body["total"] == 4
-    assert body["limit"] == 50
+    assert body["limit"] == 100
     assert body["offset"] == 0
     assert len(body["items"]) == 4
 

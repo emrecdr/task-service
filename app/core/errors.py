@@ -12,8 +12,10 @@ from enum import StrEnum
 from typing import Any
 
 from fastapi import FastAPI, Request, status
+from fastapi.exception_handlers import http_exception_handler as default_http_exception_handler
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 
 class ErrorCode(StrEnum):
@@ -101,6 +103,24 @@ def register_exception_handlers(app: FastAPI) -> None:
             details=exc.details,
             status_code=exc.status_code,
         )
+
+    @app.exception_handler(StarletteHTTPException)
+    async def _http_exception_handler(request: Request, exc: StarletteHTTPException) -> Response:
+        # FastAPI raises ``HTTPException(400, "There was an error parsing the body")``
+        # for non-JSON request bodies — that path bypasses ``RequestValidationError``
+        # entirely. Re-wrap as the canonical ``validation_error`` envelope so FRD §3.4
+        # holds for malformed bodies too. All other ``HTTPException``s (notably 405,
+        # which Starlette annotates with the RFC 9110 ``Allow`` header) delegate to
+        # FastAPI's default handler so framework-level headers survive untouched.
+        if exc.status_code == status.HTTP_400_BAD_REQUEST:
+            return _envelope(
+                request=request,
+                code=ErrorCode.VALIDATION_ERROR,
+                message=str(exc.detail) if exc.detail else "Request body is not valid JSON.",
+                details={},
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            )
+        return await default_http_exception_handler(request, exc)
 
     @app.exception_handler(RequestValidationError)
     async def _request_validation_handler(request: Request, exc: RequestValidationError) -> JSONResponse:

@@ -3,7 +3,6 @@
 **Project:** Internal Task Service
 **Document Version:** 1.0
 **Companion to:** `docs/PRD.md`
-**Source of Truth:** `docs/Python_Assignment.pdf`
 
 ---
 
@@ -120,7 +119,7 @@ All routes are mounted under `/v1`. All responses are JSON. All timestamps are R
     /* TaskResponse */
   ],
   "total": 137,
-  "limit": 50,
+  "limit": 100,
   "offset": 0
 }
 ```
@@ -131,7 +130,7 @@ All routes are mounted under `/v1`. All responses are JSON. All timestamps are R
 | -------- | ------------------------------- | --------------- | ----------------------------------------------------------------------------------------------------------- |
 | `status` | `Status` enum                   | —               | Filters to that status only. Multiple values supported via `?status=new&status=in_progress`.                |
 | `sort`   | `priority_asc \| priority_desc` | `priority_desc` | Only `priority` is sortable in Phase 1. Tasks with equal priority are sub-sorted by `created_at` ascending. |
-| `limit`  | int                             | `50`            | 1–500. Values outside this range → 422.                                                                     |
+| `limit`  | int                             | `100`           | 1–500. Values outside this range → 422.                                                                     |
 | `offset` | int                             | `0`             | ≥ 0.                                                                                                        |
 
 ### 3.4 Standardized error body
@@ -218,7 +217,7 @@ Rules:
 | `DATABASE_URL`       | str                         | `sqlite+pysqlite:///:memory:` | SQLModel engine URL.                                              |
 | `PROJECT_NAME`       | str                         | `Internal Task Service`       | OpenAPI title.                                                    |
 | `API_V1_PREFIX`      | str                         | `/v1`                         | Allows hosting under a different base path.                       |
-| `DEFAULT_LIST_LIMIT` | int                         | `50`                          | Default pagination limit.                                         |
+| `DEFAULT_LIST_LIMIT` | int                         | `100`                         | Default pagination limit.                                         |
 | `MAX_LIST_LIMIT`     | int                         | `500`                         | Hard cap on pagination limit.                                     |
 
 ### 6.3 `APP_ENV` → defaults matrix

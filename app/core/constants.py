@@ -22,5 +22,10 @@ class OrderDirection(StrEnum):
     DESC = "desc"
 
 
-DEFAULT_LIST_LIMIT: Final[int] = 50
+DEFAULT_LIST_LIMIT: Final[int] = 100
 MAX_LIST_LIMIT: Final[int] = 500
+
+# Upper bound for resource path-id parameters. Matches the SQLite/SQLAlchemy
+# signed 64-bit INTEGER column ceiling; values past this overflow the driver,
+# so they are rejected at the API boundary as a clean 422.
+INT64_MAX: Final[int] = 2**63 - 1

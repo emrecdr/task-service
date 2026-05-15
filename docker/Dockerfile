@@ -24,7 +24,10 @@ RUN pip install --no-cache-dir uv
 WORKDIR /app
 
 # ``--no-install-project`` keeps the project source out of the dep-resolve
-# step so the dependency layer caches independently of code changes.
+# step so the dependency layer caches independently of code changes. The
+# runtime version is read at import time from ``app/__init__.py::__version__``
+# (see :mod:`app.main`), so the project itself does not need to be installed
+# into the venv — only its dependencies.
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
