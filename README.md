@@ -10,14 +10,13 @@ A small distributed team kept losing track of agreed action items in chat thread
 
 ### Use cases
 
-| Persona               | Story                                                                                        |
-| --------------------- | -------------------------------------------------------------------------------------------- |
-| **Developer**         | Create a task right after a stand-up via `POST /v1/tasks`; later script bulk imports from CI |
-| **Developer**         | List open work filtered by `status=new`, sorted by `priority`, paginated by `offset/limit`   |
-| **Developer**         | PATCH a task to flip status (`new → in_progress → completed`) without resending the title    |
-| **Product Owner**     | Be prevented from creating duplicate titles (case-insensitive, trimmed)                      |
-| **On-call engineer**  | Probe `/healthz` / `/readyz`, follow a request across logs via `X-Request-ID`                |
-| **Systems architect** | Swap the SQLite repository for Postgres in Phase 2 without rewriting domain/application code |
+| Persona              | Story                                                                                        |
+| -------------------- | -------------------------------------------------------------------------------------------- |
+| **Developer**        | Create a task right after a stand-up via `POST /v1/tasks`; later script bulk imports from CI |
+| **Developer**        | List open work filtered by `status=new`, sorted by `priority`, paginated by `offset/limit`   |
+| **Developer**        | PATCH a task to flip status (`new → in_progress → completed`) without resending the title    |
+| **Product Owner**    | Be prevented from creating duplicate titles (case-insensitive, trimmed)                      |
+| **On-call engineer** | Probe `/healthz` / `/readyz`, follow a request across logs via `X-Request-ID`                |
 
 ## What the API looks like
 
@@ -85,30 +84,41 @@ The codebase is organised feature-first: each feature under `app/services/<featu
 
 ```
 app/
-├── core/                          # Cross-cutting: config, constants, errors, event_bus,
-│                                  #   logging, middleware, datetime_utils,
-│                                  #   openapi_responses, dependencies, health, database
+├── __init__.py                    # __version__ (single source of truth; hatchling reads here)
 ├── main.py                        # FastAPI app factory + lifespan + middleware wiring
-└── services/tasks/
-    ├── domain/                    # Task SQLModel (table=True) + 5 domain events
-    ├── application/               # TaskService (use-case orchestration) + DTOs
-    ├── infrastructure/            # SQLModelTaskRepository + event listeners
-    ├── api/v1/                    # FastAPI router (mounted under /v1/tasks)
-    ├── interfaces.py              # TaskRepositoryInterface ABC + MUTABLE_FIELDS frozenset
-    ├── constants.py               # Status / TaskSortField StrEnums + field bounds
-    ├── dependencies.py            # Feature DI providers (repository, service, query params)
-    ├── errors.py                  # DuplicateTaskError, TaskNotFoundError, EmptyUpdateError, …
-    ├── MODULE.md                  # Feature-internal doc: invariants, error-table, conventions
-    └── tests/                     # Feature-local unit tests (no FastAPI, no DB)
+├── core/                          # Cross-cutting infrastructure — no feature imports here
+│   ├── config.py                  # pydantic-settings + APP_ENV behavior matrix
+│   ├── constants.py               # Environment / OrderDirection enums + INT64_MAX, list-limit bounds
+│   ├── database.py                # SQLAlchemy engine + StaticPool wiring + init_schema
+│   ├── datetime_utils.py          # ensure_utc helper (boundary normaliser)
+│   ├── dependencies.py            # Cross-cutting DI: get_session, get_event_bus
+│   ├── errors.py                  # ErrorCode enum, AppError hierarchy, global handlers
+│   ├── event_bus.py               # In-process EventBus (publish via BackgroundTasks)
+│   ├── health.py                  # /healthz and /readyz handlers
+│   ├── logging.py                 # structlog configuration
+│   ├── middleware.py              # Request-ID middleware
+│   └── openapi_responses.py       # Shared 404 / 409 / 422 response specs for the router
+└── services/
+    └── tasks/                     # Feature-first vertical slice — full domain/app/infra/api
+        ├── domain/                # Task SQLModel (table=True) + 5 domain events
+        ├── application/           # TaskService (use-case orchestration) + DTOs
+        ├── infrastructure/        # SQLModelTaskRepository + event listeners
+        ├── api/v1/                # FastAPI router (mounted under /v1/tasks)
+        ├── interfaces.py          # TaskRepositoryInterface ABC + MUTABLE_FIELDS frozenset
+        ├── constants.py           # Status / TaskSortField StrEnums + field bounds
+        ├── dependencies.py        # Feature DI providers (repository, service, query params)
+        ├── errors.py              # DuplicateTaskError, TaskNotFoundError, EmptyUpdateError, …
+        ├── MODULE.md              # Feature-internal doc: invariants, error-table, conventions
+        └── tests/                 # Feature-local unit tests (no FastAPI, no DB)
 tests/
 ├── conftest.py                    # Test fixtures (in-process app, lifespan, fresh DB)
 ├── integration/                   # httpx.AsyncClient against in-process FastAPI app
 ├── contract/                      # Parametrised over every TaskRepositoryInterface impl
-├── e2e/                           # Opt-in Schemathesis property tests (marker: ``e2e``)
+├── e2e/                           # Schemathesis property tests (pytest marker: ``e2e``)
 └── hurl/                          # 12 black-box scenarios against the running container
 docker/                            # Multi-stage Dockerfile + docker-compose.yaml
 docs/                              # PRD (product), FRD (functional), TIS (technical)
-.github/workflows/                 # CI: pre-commit → mypy → pytest → Hurl → docker build
+.github/workflows/                 # CI: pre-commit → mypy → pytest → Hurl
 reports/hurl/                      # Generated HTML + JSON reports (gitignored except .gitkeep)
 ```
 
@@ -173,15 +183,15 @@ A fresh checkout to a running service is one command — `make compose-up` or `m
 
 ## Tests
 
-Tests live at four layers, each chosen to give a *different* kind of confidence:
+Tests live at four layers, each chosen to give a _different_ kind of confidence:
 
-| Layer            | Location                                | What it proves                                          | When it runs            |
-| ---------------- | --------------------------------------- | ------------------------------------------------------- | ----------------------- |
-| **Unit**         | `app/services/<feature>/tests/`         | Single classes/functions in isolation; no FastAPI, no DB | Every `make test`       |
-| **Integration**  | `tests/integration/`                    | The HTTP boundary against `httpx.AsyncClient` + ASGI    | Every `make test`       |
-| **Contract**     | `tests/contract/`                       | Every `TaskRepositoryInterface` impl satisfies the ABC  | Every `make test`       |
-| **E2E (Hurl)**   | `tests/hurl/`                           | Black-box HTTP flows against the running container      | `make hurl-e2e` / CI    |
-| **Property-based** (opt-in) | `tests/e2e/test_schemathesis.py` | Schemathesis fuzzes every documented operation         | `make schemathesis`     |
+| Layer              | Location                         | What it proves                                           | When it runs         |
+| ------------------ | -------------------------------- | -------------------------------------------------------- | -------------------- |
+| **Unit**           | `app/services/<feature>/tests/`  | Single classes/functions in isolation; no FastAPI, no DB | Every `make test`    |
+| **Integration**    | `tests/integration/`             | The HTTP boundary against `httpx.AsyncClient` + ASGI     | Every `make test`    |
+| **Contract**       | `tests/contract/`                | Every `TaskRepositoryInterface` impl satisfies the ABC   | Every `make test`    |
+| **E2E (Hurl)**     | `tests/hurl/`                    | Black-box HTTP flows against the running container       | `make hurl-e2e` / CI |
+| **Property-based** | `tests/e2e/test_schemathesis.py` | Schemathesis fuzzes every documented operation           | `make schemathesis`  |
 
 The split rule for unit vs. integration: _can this test run with only my feature module imported?_ Yes → unit test, lives in `app/services/<feature>/tests/`. No (needs the full FastAPI app, real HTTP, or another feature) → cross-boundary, lives in `tests/`.
 
@@ -192,7 +202,7 @@ make test-unit          # feature-local unit tests only — fast, no FastAPI/DB
 make test-integration   # in-process FastAPI + SQLite :memory:
 make test-contract      # repository ABC conformance — parametrised over every impl
 make hurl-e2e           # 12-scenario black-box Hurl suite against the docker-compose container
-make schemathesis       # opt-in Schemathesis property tests via pytest (ASGI in-process, no container)
+make schemathesis       # Schemathesis property tests via pytest (ASGI in-process, no container)
 ```
 
 Run a single pytest:
@@ -204,9 +214,9 @@ uv run pytest tests/integration/services/tasks/test_create_task.py::test_create_
 
 ### Hurl E2E scenarios
 
-**What it is.** [Hurl](https://hurl.dev) is a small CLI that runs plain-text `.hurl` files of HTTP requests with first-class support for variable captures, JSONPath assertions, and stateful multi-step flows. We use it as the highest-level (black-box) test layer: scenarios talk to the *running* container, not the in-process FastAPI app, so the Docker image, lifespan, healthcheck, and middleware stack are all exercised end-to-end.
+**What it is.** [Hurl](https://hurl.dev) is a small CLI that runs plain-text `.hurl` files of HTTP requests with first-class support for variable captures, JSONPath assertions, and stateful multi-step flows. We use it as the highest-level (black-box) test layer: scenarios talk to the _running_ container, not the in-process FastAPI app, so the Docker image, lifespan, healthcheck, and middleware stack are all exercised end-to-end.
 
-**Why Hurl on top of pytest.** Integration tests (pytest + `httpx.AsyncClient`) cover correctness *inside* the Python process; they bypass the Docker image, the uvicorn process model, and any container-side glue. Hurl runs the same image that ships to production. The two layers catch different things — pytest catches logic bugs, Hurl catches packaging / config / runtime bugs.
+**Why Hurl on top of pytest.** Integration tests (pytest + `httpx.AsyncClient`) cover correctness _inside_ the Python process; they bypass the Docker image, the uvicorn process model, and any container-side glue. Hurl runs the same image that ships to production. The two layers catch different things — pytest catches logic bugs, Hurl catches packaging / config / runtime bugs.
 
 **Run the full suite (recommended path).** Brings the container up, runs every `tests/hurl/*.hurl` file sequentially, writes HTML + JSON reports, then tears the container down — even on failure (trap on `EXIT`):
 
@@ -232,20 +242,20 @@ Use `--very-verbose` for full request/response bodies — invaluable when an `[A
 
 **The 12 scenarios in `tests/hurl/`.**
 
-| Scenario                            | What it pins down                                                                |
-| ----------------------------------- | -------------------------------------------------------------------------------- |
-| `healthz.hurl`                      | `GET /healthz` returns 200 (no I/O — process is alive)                           |
-| `readyz.hurl`                       | `GET /readyz` does a real DB round-trip and returns 200                          |
-| `request_id_propagation.hurl`       | `X-Request-ID` echoed when caller sends one; generated when absent               |
-| `task_create.hurl`                  | Happy-path POST                                                                  |
-| `task_create_validation_errors.hurl`| Each invalid-input shape → 422 with the right code                               |
-| `task_create_duplicate_title.hurl`  | Case-insensitive + trimmed duplicate detection on CREATE                         |
-| `task_not_found.hurl`               | 404 envelope shape on GET / PATCH / PUT / DELETE of a missing id                 |
-| `task_patch_partial.hurl`           | PATCH partial-update semantics; `empty_update` on `{}`                           |
-| `task_put_full_replace.hurl`        | PUT full-replace semantics                                                       |
-| `task_lifecycle.hurl`               | One task: `new → in_progress → completed → delete → 404`                          |
-| `task_list_filter_sort.hurl`        | Sorting, status filter, pagination, limit-validation                             |
-| `task_full_flow.hurl`               | Multi-task narrative: 4 creates, dup-rejection on create + rename, PATCH/PUT/DELETE, multi-value status filter, error envelopes mid-flow, cleanup |
+| Scenario                             | What it pins down                                                                                                                                 |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `healthz.hurl`                       | `GET /healthz` returns 200 (no I/O — process is alive)                                                                                            |
+| `readyz.hurl`                        | `GET /readyz` does a real DB round-trip and returns 200                                                                                           |
+| `request_id_propagation.hurl`        | `X-Request-ID` echoed when caller sends one; generated when absent                                                                                |
+| `task_create.hurl`                   | Happy-path POST                                                                                                                                   |
+| `task_create_validation_errors.hurl` | Each invalid-input shape → 422 with the right code                                                                                                |
+| `task_create_duplicate_title.hurl`   | Case-insensitive + trimmed duplicate detection on CREATE                                                                                          |
+| `task_not_found.hurl`                | 404 envelope shape on GET / PATCH / PUT / DELETE of a missing id                                                                                  |
+| `task_patch_partial.hurl`            | PATCH partial-update semantics; `empty_update` on `{}`                                                                                            |
+| `task_put_full_replace.hurl`         | PUT full-replace semantics                                                                                                                        |
+| `task_lifecycle.hurl`                | One task: `new → in_progress → completed → delete → 404`                                                                                          |
+| `task_list_filter_sort.hurl`         | Sorting, status filter, pagination, limit-validation                                                                                              |
+| `task_full_flow.hurl`                | Multi-task narrative: 4 creates, dup-rejection on create + rename, PATCH/PUT/DELETE, multi-value status filter, error envelopes mid-flow, cleanup |
 
 **Authoring conventions** for new `.hurl` files (so they coexist under `--jobs 1` against the shared in-memory SQLite):
 
@@ -253,14 +263,14 @@ Use `--very-verbose` for full request/response bodies — invaluable when an `[A
 - Assert presence with `jsonpath "$.items[?(@.title=='…')]" exists` / `not exists` rather than `$.total == N` — other scenarios' rows pad the total count unpredictably.
 - Capture ids once with `[Captures] task_id: jsonpath "$.id"`, then reuse `{{task_id}}` across follow-up requests in the same file.
 - Use `{{base_url}}` for the host so the same file works against a local container and against any future remote env.
-- If a scenario *creates* rows it doesn't need to leave behind, `DELETE` them at the end as hygiene.
+- If a scenario _creates_ rows it doesn't need to leave behind, `DELETE` them at the end as hygiene.
 
 ## Configuration
 
 `pydantic-settings` resolves settings from **three sources, in increasing precedence**:
 
 1. `.env` — base values, copied from `.env.example` during setup.
-2. `.env.<APP_ENV>` — optional overrides for the active environment (e.g. `.env.qa`). Layered *on top of* `.env`, not instead of it.
+2. `.env.<APP_ENV>` — optional overrides for the active environment (e.g. `.env.qa`). Layered _on top of_ `.env`, not instead of it.
 3. **Process environment variables** — always win over both files. This is what k8s `env:` blocks and CI manifests use.
 
 `APP_ENV ∈ {dev, test, qa, prod}` and defaults to `dev`.
@@ -295,7 +305,7 @@ APP_ENV=qa LOG_LEVEL=DEBUG uv run uvicorn app.main:app
 - **No auth / authz / rate limits** — the service assumes trusted callers on a private network.
 - **Single worker** — multi-worker deployment is a Phase 2 concern.
 
-**Phase 2 (planned):** Postgres + async repository, authentication, multi-worker, mandatory Schemathesis property tests, optional event sinks (outbox / Kafka). The application and domain layers stay untouched; only `infrastructure/` and `interfaces.py` widen.
+**Phase 2 (planned):** Postgres + async repository, authentication, multi-worker, optional event sinks (outbox / Kafka), and promoting `make schemathesis` from a standalone target into the default CI gate. The application and domain layers stay untouched; only `infrastructure/` and `interfaces.py` widen.
 
 ## Project tooling
 
