@@ -8,16 +8,6 @@ The locked design lives in [`docs/PRD.md`](docs/PRD.md) (product), [`docs/FRD.md
 
 A small distributed team kept losing track of agreed action items in chat threads and personal to-do lists. There was no single source of truth for "what we said we'd do," which caused duplicates, naming confusion in stand-ups, and no way to filter or prioritize work across the team. The PO asked for "a simple task service. Something internal. Clean. We'll build more on top of it later." This repo is that first iteration.
 
-### Use cases
-
-| Persona              | Story                                                                                        |
-| -------------------- | -------------------------------------------------------------------------------------------- |
-| **Developer**        | Create a task right after a stand-up via `POST /v1/tasks`; later script bulk imports from CI |
-| **Developer**        | List open work filtered by `status=new`, sorted by `priority`, paginated by `offset/limit`   |
-| **Developer**        | PATCH a task to flip status (`new → in_progress → completed`) without resending the title    |
-| **Product Owner**    | Be prevented from creating duplicate titles (case-insensitive, trimmed)                      |
-| **On-call engineer** | Probe `/healthz` / `/readyz`, follow a request across logs via `X-Request-ID`                |
-
 ## What the API looks like
 
 All endpoints are mounted under `/v1`. Open the interactive docs at <http://localhost:8000/docs> for the live schema.
