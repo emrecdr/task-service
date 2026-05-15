@@ -18,34 +18,39 @@ from app.services.tasks.constants import Status, TaskSortField
 from app.services.tasks.infrastructure.repository import SQLModelTaskRepository
 from app.services.tasks.interfaces import TaskRepositoryInterface
 
+SessionDep = Annotated[Session, Depends(get_session)]
+EventBusDep = Annotated[EventBus, Depends(get_event_bus)]
 
-def get_repository(session: Session = Depends(get_session)) -> TaskRepositoryInterface:
+
+def get_repository(session: SessionDep) -> TaskRepositoryInterface:
     return SQLModelTaskRepository(session)
 
 
-def get_task_service(
-    repo: TaskRepositoryInterface = Depends(get_repository),
-    events: EventBus = Depends(get_event_bus),
-) -> TaskService:
+RepositoryDep = Annotated[TaskRepositoryInterface, Depends(get_repository)]
+
+
+def get_task_service(repo: RepositoryDep, events: EventBusDep) -> TaskService:
     return TaskService(repo=repo, events=events)
 
 
+TaskServiceDep = Annotated[TaskService, Depends(get_task_service)]
+
+
 def get_task_query_params(
-    statuses: list[Status] | None = Query(
-        default=None,
-        alias="status",
-        description="Filter by status. Repeat the param for multiple values.",
-    ),
-    order_by: TaskSortField = Query(
-        default=TaskSortField.PRIORITY,
-        description="Field to order results by.",
-    ),
-    order_dir: OrderDirection = Query(
-        default=OrderDirection.DESC,
-        description="Sort direction.",
-    ),
-    limit: int = Query(default=DEFAULT_LIST_LIMIT, ge=1, le=MAX_LIST_LIMIT),
-    offset: int = Query(default=0, ge=0),
+    statuses: Annotated[
+        list[Status] | None,
+        Query(alias="status", description="Filter by status. Repeat the param for multiple values."),
+    ] = None,
+    order_by: Annotated[
+        TaskSortField,
+        Query(description="Field to order results by."),
+    ] = TaskSortField.PRIORITY,
+    order_dir: Annotated[
+        OrderDirection,
+        Query(description="Sort direction."),
+    ] = OrderDirection.DESC,
+    limit: Annotated[int, Query(ge=1, le=MAX_LIST_LIMIT)] = DEFAULT_LIST_LIMIT,
+    offset: Annotated[int, Query(ge=0)] = 0,
 ) -> TaskListParams:
     """Bind ``GET /v1/tasks`` query parameters into a single validated DTO."""
     return TaskListParams(

@@ -85,12 +85,12 @@ files = ["app", "tests"]
 asyncio_mode = "auto"
 testpaths = ["app/services", "tests"]
 python_files = ["test_*.py"]
-addopts = "--import-mode=importlib --cov=app --cov-report=term --cov-fail-under=80"
+addopts = "--import-mode=importlib --cov=app --cov-report=term --cov-fail-under=80 -m 'not e2e'"
 markers = [
     "unit: pure in-module tests",
     "integration: FastAPI app + repo, in-process",
     "contract: port-conformance tests",
-    "e2e: external network / container",
+    "e2e: opt-in Schemathesis property tests (ASGI in-process); excluded from default runs",
 ]
 
 [tool.coverage.run]

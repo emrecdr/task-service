@@ -1,6 +1,7 @@
-.PHONY: help \
+.PHONY: help all install \
         clean clean-all port-check-kill \
-        lint typecheck test test-unit test-integration test-contract quality \
+        lint typecheck test test-unit test-integration test-contract \
+        hurl-e2e schemathesis \
         run \
         docker-build compose-up compose-down compose-logs
 
@@ -14,6 +15,12 @@ DOCKER_COMPOSE := docker compose -f docker/docker-compose.yaml
 help: ## ✨ Show this help message
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-22s\033[0m %s\n", $$1, $$2}'
 
+all: lint typecheck test ## ✨ One-shot pre-push: static gates + full pytest suite
+
+install: ## 📦 Sync dependencies and wire pre-commit hooks
+	uv sync --all-groups
+	uv run pre-commit install
+
 # --- Code quality ----------------------------------------------------------
 
 lint: ## 🧹 Ruff check + format + Bandit security scan
@@ -23,8 +30,6 @@ lint: ## 🧹 Ruff check + format + Bandit security scan
 
 typecheck: ## 🔍 mypy strict on app + tests
 	uv run mypy
-
-quality: lint typecheck test ## ✨ Full quality pipeline (lint + typecheck + test with coverage)
 
 # --- Tests -----------------------------------------------------------------
 
@@ -39,6 +44,22 @@ test-integration: ## 🧪 Integration tests — in-process FastAPI + SQLite :mem
 
 test-contract: ## 🧪 Contract tests — repository ABC conformance
 	uv run pytest tests/contract --no-cov
+
+# --- E2E (against running container) ---------------------------------------
+
+# ``--jobs 1`` is required: Phase 1's in-memory SQLite + StaticPool serialises
+# on a single connection; Hurl's default parallel runs race on session state.
+hurl-e2e: ## 🌐 Run Hurl E2E suite (--jobs 1) against the docker-compose service
+	@trap '$(DOCKER_COMPOSE) down' EXIT; \
+	$(DOCKER_COMPOSE) up -d --wait task-service && \
+	hurl --test --jobs 1 \
+	     --variable base_url=http://localhost:$(APP_PORT) \
+	     --report-html reports/hurl/ \
+	     --report-json reports/hurl/report.json \
+	     tests/hurl/*.hurl
+
+schemathesis: ## 🎲 Property-based OpenAPI tests via pytest (opt-in; ASGI in-process, no container needed)
+	uv run pytest -m e2e --no-cov
 
 # --- Local run -------------------------------------------------------------
 

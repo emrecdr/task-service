@@ -126,17 +126,15 @@ FastAPI + SQLModel (`:memory:`) + Internal Event Bus + structured logs + Docker.
 
 Captured here as planning seeds only; detailed designs and TIS revisions happen when each item is scheduled.
 
-- Persistent storage adapter (PostgreSQL).
+- Persistent storage adapter (PostgreSQL / MySQL).
+- Cache layer (Redis, Memcached)
 - Schema migrations via **Alembic**.
 - Rate limiting via **slowapi**.
+- **Users module** - tasks created by user & assign to a user.
 - **RBAC** authentication & authorization module (OIDC + role/permission matrix).
+- **Tags module** - tasks can have one or multiple tags.
 - **Workflow Phase module** — make the currently hard-coded statuses (`new`, `in_progress`, `completed`) into a configurable entity with its own endpoints and per-phase business rules.
+- **Attachment support** - Tasks can have file attachment support.
 - Notification adapter for Slack subscribing to `TaskStatusChanged` / `TaskCompleted`.
 - `/metrics` endpoint (Prometheus).
 - Audit log and soft delete.
-
-### Phase 3 — Platform (speculative)
-
-- React/Vue front-end consuming the `/v1` API.
-- Distributed event bus (Kafka/NATS) for cross-service consumers.
-- Multi-tenant task spaces.

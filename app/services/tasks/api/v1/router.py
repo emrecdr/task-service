@@ -10,7 +10,7 @@ on the decorator drives both the OpenAPI schema and the actual conversion
 (via ``TaskResponse.model_config.from_attributes=True``).
 """
 
-from fastapi import APIRouter, BackgroundTasks, Depends, status
+from fastapi import APIRouter, BackgroundTasks, status
 
 from app.core.openapi_responses import (
     CONFLICT_RESPONSE,
@@ -23,8 +23,7 @@ from app.services.tasks.application.dto import (
     TaskPatch,
     TaskResponse,
 )
-from app.services.tasks.application.service import TaskService
-from app.services.tasks.dependencies import TaskQueryParamsDep, get_task_service
+from app.services.tasks.dependencies import TaskQueryParamsDep, TaskServiceDep
 from app.services.tasks.domain.models import Task
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
@@ -45,7 +44,7 @@ router = APIRouter(prefix="/tasks", tags=["tasks"])
 async def create_task(
     body: TaskCreate,
     background_tasks: BackgroundTasks,
-    service: TaskService = Depends(get_task_service),
+    service: TaskServiceDep,
 ) -> Task:
     return await service.create(**body.model_dump(), background_tasks=background_tasks)
 
@@ -59,11 +58,11 @@ async def create_task(
     response_model=TaskListResponse,
     responses={422: VALIDATION_RESPONSE},
 )
-def list_tasks(
+async def list_tasks(
     query_params: TaskQueryParamsDep,
-    service: TaskService = Depends(get_task_service),
+    service: TaskServiceDep,
 ) -> TaskListResponse:
-    items, total = service.list(params=query_params)
+    items, total = await service.list(params=query_params)
     return TaskListResponse.model_validate(
         {
             "items": items,
@@ -83,11 +82,11 @@ def list_tasks(
     response_model=TaskResponse,
     responses={404: NOT_FOUND_RESPONSE},
 )
-def get_task(
+async def get_task(
     task_id: int,
-    service: TaskService = Depends(get_task_service),
+    service: TaskServiceDep,
 ) -> Task:
-    return service.get(task_id)
+    return await service.get(task_id)
 
 
 # ======================================================= #
@@ -107,7 +106,7 @@ async def replace_task(
     task_id: int,
     body: TaskCreate,
     background_tasks: BackgroundTasks,
-    service: TaskService = Depends(get_task_service),
+    service: TaskServiceDep,
 ) -> Task:
     return await service.replace(task_id, **body.model_dump(), background_tasks=background_tasks)
 
@@ -129,7 +128,7 @@ async def patch_task(
     task_id: int,
     body: TaskPatch,
     background_tasks: BackgroundTasks,
-    service: TaskService = Depends(get_task_service),
+    service: TaskServiceDep,
 ) -> Task:
     return await service.patch(
         task_id,
@@ -150,6 +149,6 @@ async def patch_task(
 async def delete_task(
     task_id: int,
     background_tasks: BackgroundTasks,
-    service: TaskService = Depends(get_task_service),
+    service: TaskServiceDep,
 ) -> None:
     await service.delete(task_id, background_tasks=background_tasks)

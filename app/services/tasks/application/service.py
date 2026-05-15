@@ -46,10 +46,10 @@ class TaskService:
         await self._events.publish(TaskCreated(task=task), background_tasks)
         return task
 
-    def get(self, task_id: int) -> Task:
+    async def get(self, task_id: int) -> Task:
         return self._repo.get(task_id)
 
-    def list(self, *, params: TaskListParams) -> tuple[list[Task], int]:
+    async def list(self, *, params: TaskListParams) -> tuple[list[Task], int]:
         return self._repo.list(
             statuses=params.statuses,
             order_by=params.order_by,

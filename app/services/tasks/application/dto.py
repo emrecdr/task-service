@@ -7,8 +7,9 @@ global handler in :mod:`app.core.errors` translates those into the
 """
 
 from datetime import datetime
+from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_serializer
 
 from app.core.constants import DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT, OrderDirection
 from app.core.datetime_utils import ensure_utc
@@ -26,29 +27,31 @@ from app.services.tasks.constants import (
 def _require_non_blank_title(value: str) -> str:
     """Reject whitespace-only titles at the framework boundary (FRD §2.4).
 
-    Pydantic's ``min_length=1`` only checks the raw string length, so a value
-    like ``"   "`` would slip past the DTO and raise a plain ``ValueError``
-    inside the domain — which the global handler cannot convert to the
-    standard envelope. Tightening the validator here keeps the contract
-    surface (422 ``validation_error``) consistent.
+    Pydantic's ``min_length=1`` only checks raw string length, so ``"   "``
+    slips past ``Field(min_length=…)`` and raises a plain ``ValueError`` in the
+    domain — which the global handler cannot convert to the standard envelope.
     """
     if not value.strip():
         raise ValueError("title must not be blank or whitespace-only")
     return value
 
 
+# Reusable Pydantic V2 type alias — bounds + custom validator live with the type,
+# not duplicated on every field declaration.
+NonBlankTitle = Annotated[
+    str,
+    Field(min_length=TITLE_MIN_LENGTH, max_length=TITLE_MAX_LENGTH),
+    AfterValidator(_require_non_blank_title),
+]
+
+
 class TaskCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    title: str = Field(min_length=TITLE_MIN_LENGTH, max_length=TITLE_MAX_LENGTH)
+    title: NonBlankTitle
     description: str | None = Field(default=None, max_length=DESCRIPTION_MAX_LENGTH)
     status: Status = Status.NEW
     priority: int = Field(ge=PRIORITY_MIN, le=PRIORITY_MAX)
-
-    @field_validator("title")
-    @classmethod
-    def _validate_title(cls, value: str) -> str:
-        return _require_non_blank_title(value)
 
 
 class TaskPatch(BaseModel):
@@ -56,15 +59,10 @@ class TaskPatch(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    title: str | None = Field(default=None, min_length=TITLE_MIN_LENGTH, max_length=TITLE_MAX_LENGTH)
+    title: NonBlankTitle | None = None
     description: str | None = Field(default=None, max_length=DESCRIPTION_MAX_LENGTH)
     status: Status | None = None
     priority: int | None = Field(default=None, ge=PRIORITY_MIN, le=PRIORITY_MAX)
-
-    @field_validator("title")
-    @classmethod
-    def _validate_title(cls, value: str | None) -> str | None:
-        return _require_non_blank_title(value) if value is not None else None
 
 
 class TaskResponse(BaseModel):

@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      APP_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --all-groups
+
+      - name: Pre-commit (ruff, ruff-format, bandit, file hygiene, uv lock --check)
+        run: uv run pre-commit run --all-files
+
+      - name: Typecheck
+        run: uv run mypy
+
+      - name: Pytest (unit + integration + contract, coverage gate)
+        run: uv run pytest
+
+      - name: Install Hurl
+        run: |
+          curl -sLo hurl.deb \
+            https://github.com/Orange-OpenSource/hurl/releases/latest/download/hurl_amd64.deb
+          sudo dpkg -i hurl.deb
+
+      - name: Hurl E2E suite (--jobs 1 — Phase 1 StaticPool constraint)
+        run: make hurl-e2e
+
+      - name: Upload Hurl HTML report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hurl-reports
+          path: reports/hurl/
