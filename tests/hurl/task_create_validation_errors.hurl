@@ -7,7 +7,7 @@ HTTP 422
 jsonpath "$.error.code" == "validation_error"
 jsonpath "$.error.request_id" matches "[0-9a-f-]{36}"
 
-# Whitespace-only title → 422 validation_error (custom field_validator).
+# Whitespace-only title → 422 validation_error.
 POST {{base_url}}/v1/tasks
 Content-Type: application/json
 { "title": "   ", "priority": 3 }

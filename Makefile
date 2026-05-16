@@ -5,8 +5,9 @@
         run \
         docker-build compose-up compose-down compose-logs
 
-# Defaults; override with `make APP_PORT=9000 port-check-kill`.
+# Defaults; override with `make APP_PORT=9000 <target>`.
 APP_PORT ?= 8000
+export APP_PORT
 DOCKER_IMAGE := internal-task-service:dev
 DOCKER_COMPOSE := docker compose -f docker/docker-compose.yaml
 

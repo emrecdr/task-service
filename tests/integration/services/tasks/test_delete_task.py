@@ -1,5 +1,8 @@
 import pytest
+from app.core.errors import ErrorCode
 from httpx import AsyncClient
+
+from tests.conftest import assert_error
 
 
 @pytest.mark.asyncio
@@ -13,14 +16,10 @@ async def test_delete_returns_204_then_get_404(client: AsyncClient) -> None:
     assert deleted.content == b""
 
     follow_up = await client.get(f"/v1/tasks/{task_id}")
-    assert follow_up.status_code == 404
-    err = follow_up.json()["error"]
-    assert err["code"] == "task_not_found"
-    assert err["details"] == {"id": task_id}
+    assert_error(follow_up, 404, ErrorCode.TASK_NOT_FOUND, details={"id": task_id})
 
 
 @pytest.mark.asyncio
 async def test_delete_unknown_id_returns_404(client: AsyncClient) -> None:
     r = await client.delete("/v1/tasks/99999")
-    assert r.status_code == 404
-    assert r.json()["error"]["code"] == "task_not_found"
+    assert_error(r, 404, ErrorCode.TASK_NOT_FOUND)

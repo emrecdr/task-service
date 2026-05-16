@@ -1,7 +1,10 @@
 from collections.abc import Awaitable, Callable
 
 import pytest
+from app.core.errors import ErrorCode
 from httpx import AsyncClient
+
+from tests.conftest import assert_error
 
 
 @pytest.mark.asyncio
@@ -26,8 +29,7 @@ async def test_put_unknown_id_returns_404(client: AsyncClient) -> None:
         "/v1/tasks/99999",
         json={"title": "x", "priority": 1},
     )
-    assert r.status_code == 404
-    assert r.json()["error"]["code"] == "task_not_found"
+    assert_error(r, 404, ErrorCode.TASK_NOT_FOUND)
 
 
 @pytest.mark.asyncio
@@ -38,8 +40,7 @@ async def test_put_title_collision_returns_409(client: AsyncClient, create_task:
         f"/v1/tasks/{second}",
         json={"title": "  FIRST  ", "priority": 1},
     )
-    assert r.status_code == 409
-    assert r.json()["error"]["code"] == "duplicate_task"
+    assert_error(r, 409, ErrorCode.DUPLICATE_TASK)
 
 
 @pytest.mark.asyncio
@@ -48,8 +49,7 @@ async def test_put_missing_required_field_returns_422(
 ) -> None:
     task_id = await create_task("x")
     r = await client.put(f"/v1/tasks/{task_id}", json={"title": "y"})
-    assert r.status_code == 422
-    assert r.json()["error"]["code"] == "validation_error"
+    assert_error(r, 422, ErrorCode.VALIDATION_ERROR)
 
 
 @pytest.mark.asyncio
@@ -59,10 +59,7 @@ async def test_put_rejects_server_owned_id(client: AsyncClient, create_task: Cal
         f"/v1/tasks/{task_id}",
         json={"id": 1, "title": "y", "priority": 1},
     )
-    assert r.status_code == 422
-    err = r.json()["error"]
-    assert err["code"] == "read_only_field"
-    assert err["details"] == {"field": "id"}
+    assert_error(r, 422, ErrorCode.READ_ONLY_FIELD, details={"field": "id"})
 
 
 @pytest.mark.asyncio
@@ -74,7 +71,4 @@ async def test_put_rejects_server_owned_created_at(
         f"/v1/tasks/{task_id}",
         json={"created_at": "2026-01-01T00:00:00Z", "title": "y", "priority": 1},
     )
-    assert r.status_code == 422
-    err = r.json()["error"]
-    assert err["code"] == "read_only_field"
-    assert err["details"] == {"field": "created_at"}
+    assert_error(r, 422, ErrorCode.READ_ONLY_FIELD, details={"field": "created_at"})

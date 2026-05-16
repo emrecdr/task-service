@@ -123,17 +123,18 @@ FastAPI + SQLModel (`:memory:`) + Internal Event Bus + structured logs + Docker.
 
 ### Phase 2 — Production-ready (future considerations)
 
-Captured here as planning seeds only; detailed designs and TIS revisions happen when each item is scheduled.
+Captured here as planning seeds only; detailed designs and TIS revisions happen when each item is scheduled. This list is the **single source of truth** for the product roadmap — FRD defers to it; TIS §10.1 owns any Phase 2 tooling considerations (e.g., `import-linter` reintroduction).
 
 - Persistent storage adapter (PostgreSQL / MySQL).
-- Cache layer (Redis, Memcached)
+- Cache layer (Redis, Memcached).
 - Schema migrations via **Alembic**.
 - Rate limiting via **slowapi**.
-- **Users module** - tasks created by user & assign to a user.
+- **Users module** — tasks created by and assigned to a user.
 - **RBAC** authentication & authorization module (OIDC + role/permission matrix).
-- **Tags module** - tasks can have one or multiple tags.
+- **Tags module** — tasks can have one or multiple tags.
 - **Workflow Phase module** — make the currently hard-coded statuses (`new`, `in_progress`, `completed`) into a configurable entity with its own endpoints and per-phase business rules.
-- **Attachment support** - Tasks can have file attachment support.
+- **Attachment support** — tasks can have file attachments.
 - Notification adapter for Slack subscribing to `TaskStatusChanged` / `TaskCompleted`.
-- `/metrics` endpoint (Prometheus).
-- Audit log and soft delete.
+- **`/metrics` endpoint** (Prometheus exposition format).
+- **Audit log and soft delete** — non-destructive deletes, full mutation history per task.
+- **Front-end SPA** consuming `/v1`.

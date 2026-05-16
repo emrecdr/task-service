@@ -53,7 +53,7 @@ curl -X POST http://localhost:8000/v1/tasks \
 
 The service is built around four design choices, each tied to an objective from PRD §3.
 
-**Feature-first hexagonal layout.** Each feature under `app/services/<feature>/` owns its full vertical slice — `domain/`, `application/`, `infrastructure/`, `api/` — and exposes a single `interfaces.py` ABC for the storage port. This keeps related code together (you change one feature in one folder) while preserving the dependency rule: `api` → `application` → `domain`, and `infrastructure` implements `interfaces.py`. The textbook Cosmic-Python ceremony (separate `ports/`, `Protocol` typing, distinct domain entity apart from the ORM row) is deliberately _not_ used in Phase 1 — TIS §3.1 explains the trade-off.
+**Feature-first hexagonal layout.** Each feature under `app/services/<feature>/` owns its full vertical slice — `domain/`, `application/`, `infrastructure/`, `api/` — and exposes a single `interfaces.py` ABC for the storage port. This keeps related code together (you change one feature in one folder) while preserving the dependency rule: `api` → `application` → `domain`, and `infrastructure` implements `interfaces.py`. The textbook Cosmic-Python ceremony (separate `ports/`, `Protocol` typing, distinct domain entity apart from the ORM row) is deliberately _not_ used in Phase 1 — see TIS §1 (architecture overview) and §4.1 (ORM-as-domain Decision callout).
 
 **Single domain+ORM entity.** The `Task` SQLModel row _is_ the domain entity (`table=True`). Phase 1 does not split domain and ORM into two classes; the duplication wasn't paying for itself at this scale. If/when a richer domain model arrives (state machines, invariants the ORM can't express), the split happens then.
 
@@ -114,7 +114,7 @@ reports/hurl/                      # Generated HTML + JSON reports (gitignored e
 
 ### Layered import rules
 
-Enforced by review (not tooling) — see `docs/TIS.md` §2 for the full contract:
+Enforced by review (not tooling) — see `docs/TIS.md` §1 for the full contract (and §3.1 for the layer-responsibility table):
 
 1. `domain/**` may import stdlib, `pydantic`, `sqlmodel`, `app/core/*`. **No `fastapi`.**
 2. `application/**` may import `domain/` and `interfaces.py`. **No `infrastructure/`, no `fastapi`.**

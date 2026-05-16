@@ -1,9 +1,4 @@
-"""Service-layer unit tests covering every event firing rule.
-
-Every event in FRD §5.1 has at least one positive test (fires under the
-right conditions) and at least one negative test (does NOT fire under the
-wrong conditions). No FastAPI, no DB I/O — fake repository + recording bus.
-"""
+"""Service-layer unit tests for event-firing rules — fake repo + recording bus."""
 
 from datetime import UTC, datetime
 from typing import Any
@@ -76,19 +71,13 @@ class FakeRepo(TaskRepositoryInterface):
     ) -> tuple[Task, Task]:
         task = self.get(task_id)
         previous = task.snapshot()
-        task.title, task.title_key = Task.clean_title(title)
-        task.description = description
-        task.status = status
-        task.priority = priority
+        task.apply_replace(title=title, description=description, status=status, priority=priority)
         return previous, task
 
     def patch(self, task_id: int, **fields: Any) -> tuple[Task, Task]:
         task = self.get(task_id)
         previous = task.snapshot()
-        if "title" in fields:
-            task.title, task.title_key = Task.clean_title(fields.pop("title"))
-        for field, value in fields.items():
-            setattr(task, field, value)
+        task.apply_patch(fields)
         return previous, task
 
     def delete(self, task_id: int) -> Task:

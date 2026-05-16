@@ -19,7 +19,7 @@ The service follows **simplified Hexagonal Architecture (feature-first)** — ea
 | **Outbound Adapters** (`infrastructure/`)  | `SQLModelTaskRepository`, `log_event` listener, future Postgres/Slack.                                               | Domain + interfaces + session helpers from `app/core/`.                                  |
 | **Cross-cutting** (`app/core/`)            | `AppError`, error codes, `EventBus`, `structlog` setup, Request-ID middleware, `/healthz`/`/readyz`, config.         | stdlib + framework. **Not** any individual service.                                      |
 
-**Architectural rules** are enforced by **code review**, not by `import-linter`. Reintroducing a linter for boundary checking is recorded in PRD §12 as a Phase 2+ option if the team grows beyond one squad.
+**Architectural rules** are enforced by **code review**, not by `import-linter`. Reintroducing a linter for boundary checking is captured in TIS §10.1 as a Phase 2+ option if the team grows beyond one squad.
 
 ## 2. Domain Entity
 
@@ -181,7 +181,7 @@ The service must ship an in-process **Event Bus** (publish/subscribe). Domain ev
 
 ### 5.2 Built-in listener (Phase 1)
 
-One listener ships in Phase 1: `LoggingEventListener`. It subscribes to all five events and writes a single structured log line per event, including `request_id`, `event_type`, and the payload's `task.id`.
+One listener ships in Phase 1: the `log_event` subscriber in `app/services/tasks/infrastructure/listeners.py`. It subscribes to all five events and writes a single structured log line per event, including `request_id`, `event_type`, and the payload's `task.id`.
 
 ### 5.3 Adding listeners in the future
 
@@ -311,15 +311,9 @@ The Phase 1 release ships when all of the following hold:
 
 ## 12. Future Integration Roadmap (Phase 2+)
 
-Captured here as planning seeds only. Each item gets its own design and TIS revision when scheduled.
+This section intentionally holds no list. The roadmap split is:
 
-- Persistent storage adapter (PostgreSQL).
-- Schema migrations via **Alembic**.
-- Rate limiting via **slowapi**.
-- **RBAC** authentication & authorization module (OIDC + role/permission matrix).
-- **Workflow Phase module** — make the currently hard-coded statuses (`new`, `in_progress`, `completed`) into a configurable entity with its own endpoints and per-phase business rules.
-- Notification adapter for Slack subscribing to `TaskCompleted`.
-- `/metrics` endpoint (Prometheus).
-- Audit log and soft delete.
-- Front-end SPA consuming `/v1`.
-- (If the team grows beyond one squad) Reintroduce `import-linter` to lock down hex boundaries.
+- **Product features** (Postgres, Alembic, RBAC, Slack notifier, `/metrics`, audit log, SPA, …) → **PRD §12**.
+- **Tooling considerations** (`import-linter` reintroduction, schemathesis promotion to required gate, …) → **TIS §10.1**.
+
+Adding a Phase 2 item here would create a third source of truth and re-introduce the drift we just cleaned up.

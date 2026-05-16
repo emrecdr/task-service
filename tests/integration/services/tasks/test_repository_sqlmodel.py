@@ -1,10 +1,4 @@
-"""Direct (no HTTP) integration test of the SQLModel repository adapter.
-
-These exist alongside the HTTP-level tests because Phase 1's contract tests
-(Phase 8) parametrise over implementations — having explicit per-impl smoke
-tests here pins down list-ordering and the IntegrityError translation path
-without depending on the FastAPI stack.
-"""
+"""Direct SQLModel repository smoke tests (no HTTP)."""
 
 from collections.abc import Iterator
 
@@ -19,8 +13,6 @@ from sqlmodel import Session
 
 @pytest.fixture
 def session() -> Iterator[Session]:
-    # ``_fresh_schema`` autouse fixture in tests/conftest.py already (re)creates
-    # the schema for every test, so no init_schema() call is needed here.
     with Session(engine) as s:
         yield s
 

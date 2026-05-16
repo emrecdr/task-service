@@ -1,5 +1,8 @@
 import pytest
+from app.core.errors import ErrorCode
 from httpx import AsyncClient
+
+from tests.conftest import assert_error
 
 
 async def _seed(client: AsyncClient) -> None:
@@ -67,22 +70,19 @@ async def test_list_pagination(client: AsyncClient) -> None:
 @pytest.mark.asyncio
 async def test_list_limit_above_max_returns_422(client: AsyncClient) -> None:
     r = await client.get("/v1/tasks?limit=10000")
-    assert r.status_code == 422
-    assert r.json()["error"]["code"] == "validation_error"
+    assert_error(r, 422, ErrorCode.VALIDATION_ERROR)
 
 
 @pytest.mark.asyncio
 async def test_list_negative_offset_returns_422(client: AsyncClient) -> None:
     r = await client.get("/v1/tasks?offset=-1")
-    assert r.status_code == 422
-    assert r.json()["error"]["code"] == "validation_error"
+    assert_error(r, 422, ErrorCode.VALIDATION_ERROR)
 
 
 @pytest.mark.asyncio
 async def test_list_unknown_status_returns_422(client: AsyncClient) -> None:
     r = await client.get("/v1/tasks?status=bogus")
-    assert r.status_code == 422
-    assert r.json()["error"]["code"] == "validation_error"
+    assert_error(r, 422, ErrorCode.VALIDATION_ERROR)
 
 
 @pytest.mark.asyncio

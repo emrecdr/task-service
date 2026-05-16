@@ -1,6 +1,4 @@
-"""Structured logging via ``structlog`` (FRD §7, TIS §7.3)."""
-
-from __future__ import annotations
+"""Structured logging via ``structlog``."""
 
 import sys
 
@@ -10,13 +8,7 @@ from app.core.config import settings
 
 
 def setup_logging() -> None:
-    """Configure ``structlog`` for the current environment.
-
-    - ``json_logs=True`` (``qa``, ``prod``) → single-line JSON output.
-    - Otherwise → coloured human-readable output via ``ConsoleRenderer``.
-
-    Called once from the FastAPI lifespan startup (TIS §7.7).
-    """
+    """Configure ``structlog`` — JSON in qa/prod, console renderer otherwise."""
     processors: list[structlog.types.Processor] = [
         structlog.contextvars.merge_contextvars,
         structlog.processors.add_log_level,

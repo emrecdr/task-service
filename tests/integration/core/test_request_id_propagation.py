@@ -6,7 +6,6 @@ from httpx import AsyncClient
 async def test_request_id_is_generated_when_absent(client: AsyncClient) -> None:
     r = await client.get("/healthz")
     assert r.status_code == 200
-    # Header keys are case-insensitive per HTTP; httpx normalises on access.
     assert "x-request-id" in {k.lower() for k in r.headers}
     assert r.headers["x-request-id"]  # non-empty
 

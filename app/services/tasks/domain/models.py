@@ -1,13 +1,7 @@
-"""The ``Task`` domain entity.
-
-The same class doubles as the SQLModel row (``table=True``) and the domain
-object — Phase 1 deliberately does not split them (TIS §3.1). The
-``title_key`` column is the canonical uniqueness key
-(``title.strip().casefold()``); the original ``title`` is preserved verbatim
-for display (FRD §2.4).
-"""
+"""The ``Task`` domain entity (doubles as SQLModel row)."""
 
 from datetime import UTC, datetime
+from typing import Any, Final
 
 from sqlmodel import Field, SQLModel
 
@@ -19,6 +13,9 @@ from app.services.tasks.constants import (
     TITLE_MIN_LENGTH,
     Status,
 )
+
+# Fields the domain accepts for replace/patch mutation and the service uses for change-detection.
+MUTABLE_FIELDS: Final[frozenset[str]] = frozenset({"title", "description", "status", "priority"})
 
 
 class Task(SQLModel, table=True):
@@ -33,6 +30,7 @@ class Task(SQLModel, table=True):
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC),
         nullable=False,
+        index=True,
     )
 
     @staticmethod
@@ -68,5 +66,31 @@ class Task(SQLModel, table=True):
         )
 
     def snapshot(self) -> "Task":
-        """Detached copy for event payloads — fresh instance with no session state."""
+        """Detached, revalidated copy for event payloads."""
         return Task.model_validate(self.model_dump())
+
+    def apply_replace(
+        self,
+        *,
+        title: str,
+        description: str | None,
+        status: Status,
+        priority: int,
+    ) -> None:
+        """Overwrite every mutable field; ``title_key`` is recomputed from ``title``."""
+        self.title, self.title_key = Task.clean_title(title)
+        self.description = description
+        self.status = status
+        self.priority = priority
+
+    def apply_patch(self, fields: dict[str, Any]) -> None:
+        """Apply a partial update; raise ``ValueError`` for any non-mutable key."""
+        unknown = set(fields) - MUTABLE_FIELDS
+        if unknown:
+            raise ValueError(f"unknown patch fields: {sorted(unknown)}")
+        if "title" in fields:
+            self.title, self.title_key = Task.clean_title(fields["title"])
+        for field, value in fields.items():
+            if field == "title":
+                continue
+            setattr(self, field, value)

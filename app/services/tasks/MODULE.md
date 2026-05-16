@@ -19,7 +19,7 @@ not the display title, so `"Ship plan"` and `"  ship plan  "` collide.
 ### Task (`app/services/tasks/domain/models.py`)
 
 **Table:** `tasks` — Phase 1 stores via the SQLModel row directly; there is no
-separate ORM/domain split (TIS §3.1).
+separate ORM/domain split (TIS §4.1 Decision callout).
 
 **Key fields:**
 
@@ -63,8 +63,10 @@ HTTP response:
 | `TaskDeleted`        | after a successful `DELETE`, carrying the pre-delete snapshot |
 
 Mutable fields (`{"title", "description", "status", "priority"}`) are the
-single source of truth in `interfaces.py::MUTABLE_FIELDS` — both the service
-and the repository import from there.
+single source of truth in `domain/models.py::MUTABLE_FIELDS` — the service
+imports it for change-detection and `Task.patch()` imports it for patch-dict
+validation. The repository stays out of mutability enforcement (domain
+concern).
 
 ## Errors (FRD §4)
 
@@ -102,9 +104,9 @@ Feature is hexagonal-internal (see `CLAUDE.md` for the full rule):
 ```
 api/        ← FastAPI routes; only place that imports fastapi inside the feature
 application/← TaskService + DTOs; depends on domain/ and interfaces.py
-domain/     ← Task entity + events; pure data + invariants
+domain/     ← Task entity + events + MUTABLE_FIELDS; pure data + invariants
 infrastructure/ ← SQLModelTaskRepository + log_event listener
-interfaces.py   ← TaskRepositoryInterface ABC + Sort + MUTABLE_FIELDS
+interfaces.py   ← TaskRepositoryInterface ABC (Status / TaskSortField enums in constants.py)
 errors.py       ← feature-typed exceptions, all inheriting from app.core.errors
 dependencies.py ← FastAPI providers composing repo → service
 ```

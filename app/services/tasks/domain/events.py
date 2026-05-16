@@ -1,9 +1,7 @@
-"""Five domain events for the tasks feature (FRD §5.1, TIS §3.2).
+"""Domain events for the tasks feature.
 
-All five ship from Phase 1. ``TaskCompleted`` is a convenience event derived
-from ``TaskStatusChanged`` — future listeners that only care about
-completion can subscribe to it without filtering status payloads.
-``TaskUpdated`` is the catch-all hook for audit and cache-invalidation use.
+``TaskCompleted`` is a convenience event derived from ``TaskStatusChanged``
+for listeners that only care about the completion transition.
 """
 
 from app.core.event_bus import Event

@@ -1,13 +1,4 @@
-"""Use-case orchestration for the tasks feature.
-
-Owns the event-firing rules from FRD §5.1:
-
-- ``TaskCreated`` after a successful ``add``.
-- ``TaskUpdated`` only when at least one mutable field actually changed.
-- ``TaskStatusChanged`` only when ``status`` was among the changed fields.
-- ``TaskCompleted`` only when ``status`` transitioned to ``completed``.
-- ``TaskDeleted`` after a successful ``delete``, carrying the snapshot.
-"""
+"""Use-case orchestration for the tasks feature; owns event-firing rules."""
 
 from typing import Any
 
@@ -23,9 +14,9 @@ from app.services.tasks.domain.events import (
     TaskStatusChanged,
     TaskUpdated,
 )
-from app.services.tasks.domain.models import Task
+from app.services.tasks.domain.models import MUTABLE_FIELDS, Task
 from app.services.tasks.errors import EmptyUpdateError
-from app.services.tasks.interfaces import MUTABLE_FIELDS, TaskRepositoryInterface
+from app.services.tasks.interfaces import TaskRepositoryInterface
 
 
 class TaskService:
@@ -96,10 +87,9 @@ class TaskService:
         task_id: int,
         *,
         background_tasks: BackgroundTasks,
-    ) -> Task:
+    ) -> None:
         snapshot = self._repo.delete(task_id)
         await self._events.publish(TaskDeleted(task=snapshot), background_tasks)
-        return snapshot
 
     async def _publish_update_events(
         self,

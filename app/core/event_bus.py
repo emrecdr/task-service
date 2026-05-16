@@ -1,12 +1,4 @@
-"""In-process pub/sub event bus.
-
-Listeners are scheduled via FastAPI :class:`BackgroundTasks`, which run *after*
-the HTTP response has been returned (FRD §5). This guarantees domain events
-never extend request latency. Phase 1 deliberately omits retry, dead-letter,
-and circuit-breaker support — see TIS §7.2 for the rationale.
-"""
-
-from __future__ import annotations
+"""In-process pub/sub event bus; listeners run via FastAPI ``BackgroundTasks`` after the response."""
 
 import collections
 from collections.abc import Callable
@@ -40,11 +32,6 @@ class EventBus:
         self._listeners[event_type].append(handler)
 
     async def publish(self, event: Event, background_tasks: BackgroundTasks) -> None:
-        """Schedule every handler for ``type(event)`` to run after the response.
-
-        Handlers run sequentially in registration order via FastAPI's
-        background-tasks queue; an exception in one handler does not stop the
-        rest (FastAPI logs the traceback).
-        """
+        """Schedule every handler for ``type(event)`` to run after the response."""
         for handler in self._listeners[type(event)]:
             background_tasks.add_task(handler, event)

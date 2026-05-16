@@ -1,10 +1,4 @@
-"""SQLModel-backed implementation of :class:`TaskRepositoryInterface`.
-
-Translates SQLite ``IntegrityError`` from the UNIQUE constraint on
-``title_key`` into :class:`DuplicateTaskError` (FRD §3.1 / §4). The check
-matches against ``"title_key"`` in the driver error string — fragile across
-backends but acceptable at Phase 1 single-driver scope.
-"""
+"""SQLModel-backed implementation of :class:`TaskRepositoryInterface`."""
 
 from typing import Any
 
@@ -16,7 +10,7 @@ from app.core.constants import OrderDirection
 from app.services.tasks.constants import Status, TaskSortField
 from app.services.tasks.domain.models import Task
 from app.services.tasks.errors import DuplicateTaskError, TaskNotFoundError
-from app.services.tasks.interfaces import MUTABLE_FIELDS, TaskRepositoryInterface
+from app.services.tasks.interfaces import TaskRepositoryInterface
 
 
 class SQLModelTaskRepository(TaskRepositoryInterface):
@@ -39,7 +33,6 @@ class SQLModelTaskRepository(TaskRepositoryInterface):
         )
         self._session.add(task)
         self._commit_or_translate(title)
-        self._session.refresh(task)
         return task
 
     def get(self, task_id: int) -> Task:
@@ -83,26 +76,15 @@ class SQLModelTaskRepository(TaskRepositoryInterface):
     ) -> tuple[Task, Task]:
         task = self.get(task_id)
         previous = task.snapshot()
-        task.title, task.title_key = Task.clean_title(title)
-        task.description = description
-        task.status = status
-        task.priority = priority
+        task.apply_replace(title=title, description=description, status=status, priority=priority)
         self._commit_or_translate(title)
-        self._session.refresh(task)
         return previous, task
 
     def patch(self, task_id: int, **fields: Any) -> tuple[Task, Task]:
-        unknown = set(fields) - MUTABLE_FIELDS
-        if unknown:
-            raise ValueError(f"unknown patch fields: {sorted(unknown)}")
         task = self.get(task_id)
         previous = task.snapshot()
-        if "title" in fields:
-            task.title, task.title_key = Task.clean_title(fields.pop("title"))
-        for field, value in fields.items():
-            setattr(task, field, value)
+        task.apply_patch(fields)
         self._commit_or_translate(task.title)
-        self._session.refresh(task)
         return previous, task
 
     def delete(self, task_id: int) -> Task:
@@ -113,7 +95,7 @@ class SQLModelTaskRepository(TaskRepositoryInterface):
         return snapshot
 
     def _commit_or_translate(self, title: str) -> None:
-        """Commit; translate the title_key UNIQUE violation into ``DuplicateTaskError``."""
+        """Commit; translate a ``title_key`` UNIQUE violation into ``DuplicateTaskError``."""
         try:
             self._session.commit()
         except IntegrityError as err:

@@ -1,7 +1,10 @@
 from collections.abc import Awaitable, Callable
 
 import pytest
+from app.core.errors import ErrorCode
 from httpx import AsyncClient
+
+from tests.conftest import assert_error
 
 
 @pytest.mark.asyncio
@@ -32,15 +35,11 @@ async def test_patch_empty_body_returns_422_empty_update(
 ) -> None:
     task_id = await create_task("x")
     r = await client.patch(f"/v1/tasks/{task_id}", json={})
-    assert r.status_code == 422
-    assert r.json()["error"]["code"] == "empty_update"
+    assert_error(r, 422, ErrorCode.EMPTY_UPDATE)
 
 
 @pytest.mark.asyncio
 async def test_patch_schema_documents_min_properties(client: AsyncClient) -> None:
-    # OpenAPI must declare PATCH body as requiring >= 1 field. Without it,
-    # schema-driven fuzzers treat {} as positive data and trip the runtime
-    # empty_update envelope as if it were a server bug (see Phase 2 backlog).
     r = await client.get("/openapi.json")
     assert r.status_code == 200
     task_patch_schema = r.json()["components"]["schemas"]["TaskPatch"]
@@ -51,10 +50,7 @@ async def test_patch_schema_documents_min_properties(client: AsyncClient) -> Non
 async def test_patch_rejects_server_owned_id(client: AsyncClient, create_task: Callable[..., Awaitable[int]]) -> None:
     task_id = await create_task("x")
     r = await client.patch(f"/v1/tasks/{task_id}", json={"id": 999})
-    assert r.status_code == 422
-    err = r.json()["error"]
-    assert err["code"] == "read_only_field"
-    assert err["details"] == {"field": "id"}
+    assert_error(r, 422, ErrorCode.READ_ONLY_FIELD, details={"field": "id"})
 
 
 @pytest.mark.asyncio
@@ -66,24 +62,18 @@ async def test_patch_rejects_server_owned_created_at(
         f"/v1/tasks/{task_id}",
         json={"created_at": "2026-01-01T00:00:00Z"},
     )
-    assert r.status_code == 422
-    err = r.json()["error"]
-    assert err["code"] == "read_only_field"
-    assert err["details"] == {"field": "created_at"}
+    assert_error(r, 422, ErrorCode.READ_ONLY_FIELD, details={"field": "created_at"})
 
 
 @pytest.mark.asyncio
 async def test_patch_unknown_id_returns_404(client: AsyncClient) -> None:
     r = await client.patch("/v1/tasks/99999", json={"priority": 5})
-    assert r.status_code == 404
-    assert r.json()["error"]["code"] == "task_not_found"
+    assert_error(r, 404, ErrorCode.TASK_NOT_FOUND)
 
 
 @pytest.mark.asyncio
 async def test_patch_no_op_returns_200(client: AsyncClient, create_task: Callable[..., Awaitable[int]]) -> None:
     task_id = await create_task("x", priority=2)
-    # Supplies a field but does not change it — service-layer rule: no events,
-    # but the endpoint still returns 200 with the current row.
     r = await client.patch(f"/v1/tasks/{task_id}", json={"priority": 2})
     assert r.status_code == 200
     assert r.json()["priority"] == 2

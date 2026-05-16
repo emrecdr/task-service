@@ -1,11 +1,4 @@
-"""Event listeners for the tasks feature.
-
-Phase 1 ships a single listener: :func:`log_event` writes one structured log
-line per domain event so operators can trace task lifecycle changes through
-the standard log pipeline (FRD §5.2). :func:`register_listeners` wires it
-to the shared :class:`EventBus` — kept inside the feature so adding a 6th
-event type doesn't force an edit to ``app.main``.
-"""
+"""Event listeners for the tasks feature."""
 
 from app.core.event_bus import Event, EventBus
 from app.core.logging import logger

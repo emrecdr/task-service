@@ -1,9 +1,4 @@
-"""Domain exceptions for the tasks feature.
-
-Each inherits from a base class in :mod:`app.core.errors` so the global
-exception handler can convert it into the standardised error envelope
-(FRD §3.4, §4) without per-feature handler registration.
-"""
+"""Domain exceptions for the tasks feature."""
 
 from app.core.errors import ConflictError, ErrorCode, NotFoundError, ValidationError
 

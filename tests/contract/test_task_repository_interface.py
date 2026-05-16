@@ -1,18 +1,4 @@
-"""Contract conformance for every ``TaskRepositoryInterface`` implementation.
-
-These tests assert *interface-level* invariants — behaviour every adapter
-must honour regardless of its storage technology. They are kept separate
-from ``tests/integration/services/tasks/test_repository_sqlmodel.py``,
-which pins down SQLModel-specific details (e.g. the ``title_key`` UNIQUE
-constraint translation path).
-
-Adding a Phase 2 adapter (e.g. ``PostgresTaskRepository``) requires zero
-new tests — extend ``REPO_BUILDERS`` and the entire suite runs against it.
-
-The autouse ``_fresh_schema`` fixture in ``tests/conftest.py`` already
-drops and recreates the schema before every test, so the per-builder
-factory only needs to open a session.
-"""
+"""Contract conformance tests parametrised over every ``TaskRepositoryInterface`` implementation."""
 
 from collections.abc import Callable, Iterator
 
@@ -20,6 +6,7 @@ import pytest
 from app.core.constants import OrderDirection
 from app.core.database import engine
 from app.services.tasks.constants import Status, TaskSortField
+from app.services.tasks.domain.models import Task
 from app.services.tasks.errors import DuplicateTaskError, TaskNotFoundError
 from app.services.tasks.infrastructure.repository import SQLModelTaskRepository
 from app.services.tasks.interfaces import TaskRepositoryInterface
@@ -145,3 +132,9 @@ def test_delete_returns_snapshot_and_removes(repo: TaskRepositoryInterface) -> N
     assert snapshot.title == "d"
     with pytest.raises(TaskNotFoundError):
         repo.get(created.id)
+
+
+def test_task_sort_field_values_match_task_columns() -> None:
+    """``TaskSortField.value`` is used as a ``Task`` attribute name by ``repository.list()``."""
+    for member in TaskSortField:
+        assert hasattr(Task, member.value), f"{member.name}={member.value!r} has no matching Task attribute"

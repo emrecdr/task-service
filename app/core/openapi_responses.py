@@ -1,28 +1,13 @@
-"""Shared OpenAPI response blocks for the standard error envelope.
-
-The task-service envelope shape (FRD §3.4) is constant across every route:
-
-    {"error": {"code", "message", "details", "request_id"}}
-
-Routers wire these constants via the ``responses=`` kwarg so /docs shows a
-realistic body shape and an ``error.code`` example for each failure mode,
-not just the bare HTTP status. The blocks here are *additive* to FastAPI's
-auto-generated 422 (Pydantic's ``HTTPValidationError``) — consumers see both
-shapes and the ``error.code`` field tells them which envelope is live.
-
-Keep these in sync with ``app.core.errors.ErrorCode``. When a new error
-``code`` lands in FRD §4, add an example to the matching block here.
-"""
+"""Shared OpenAPI response blocks for the standard error envelope."""
 
 from typing import Any
 
 from app.core.errors import ErrorCode
 
 _ENVELOPE_DESCRIPTION = (
-    "Standard error envelope (FRD §3.4). Branch on ``error.code`` for the "
-    "machine-readable failure mode; ``error.message`` is human-readable and "
-    "may change wording; ``error.request_id`` echoes the ``X-Request-ID`` "
-    "header for log correlation."
+    "Standard error envelope. Branch on ``error.code`` for the machine-readable "
+    "failure mode; ``error.message`` is human-readable and may change wording; "
+    "``error.request_id`` echoes the ``X-Request-ID`` header for log correlation."
 )
 
 

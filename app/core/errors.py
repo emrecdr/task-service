@@ -1,12 +1,4 @@
-"""Error code enum, ``AppError`` hierarchy, and global FastAPI exception handlers.
-
-All three concerns are colocated because they always change together (TIS §7.1).
-The handler converts both :class:`AppError` subclasses *and* Pydantic
-:class:`RequestValidationError` into the same JSON envelope (FRD §3.4), so
-consumers can switch on ``error.code`` without parsing English strings.
-"""
-
-from __future__ import annotations
+"""Error code enum, ``AppError`` hierarchy, and global exception handlers."""
 
 from enum import StrEnum
 from typing import Any
@@ -28,12 +20,7 @@ class ErrorCode(StrEnum):
 
 
 class AppError(Exception):
-    """Base class for every domain-typed exception.
-
-    Subclasses set ``status_code``, ``error_code``, and the default ``detail``
-    string. Callers pass per-instance ``details`` (a dict of arbitrary context
-    that ends up in the error envelope's ``details`` field).
-    """
+    """Base class for every domain-typed exception."""
 
     status_code: int = status.HTTP_500_INTERNAL_SERVER_ERROR
     detail: str = "An unexpected internal server error occurred."
@@ -66,7 +53,6 @@ class NotFoundError(AppError):
     status_code = status.HTTP_404_NOT_FOUND
 
 
-# Fields the server owns — callers must not set these via PUT/PATCH bodies.
 _SERVER_OWNED_FIELDS = frozenset({"id", "created_at"})
 
 
@@ -106,12 +92,8 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(StarletteHTTPException)
     async def _http_exception_handler(request: Request, exc: StarletteHTTPException) -> Response:
-        # FastAPI raises ``HTTPException(400, "There was an error parsing the body")``
-        # for non-JSON request bodies — that path bypasses ``RequestValidationError``
-        # entirely. Re-wrap as the canonical ``validation_error`` envelope so FRD §3.4
-        # holds for malformed bodies too. All other ``HTTPException``s (notably 405,
-        # which Starlette annotates with the RFC 9110 ``Allow`` header) delegate to
-        # FastAPI's default handler so framework-level headers survive untouched.
+        # Re-wrap Starlette's 400 (malformed body) as a 422 validation_error envelope;
+        # delegate all other HTTPExceptions so framework headers (e.g. 405 Allow) survive.
         if exc.status_code == status.HTTP_400_BAD_REQUEST:
             return _envelope(
                 request=request,
@@ -124,10 +106,9 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(RequestValidationError)
     async def _request_validation_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
-        # Strip ``ctx`` — it holds the non-JSON-serialisable source exception; ``msg`` carries the text.
+        # Strip ``ctx`` — it holds the non-JSON-serialisable source exception.
         errors = [{key: value for key, value in err.items() if key != "ctx"} for err in exc.errors()]
 
-        # Server-owned fields on PUT/PATCH surface as ``extra_forbidden`` (DTOs use ``extra="forbid"``).
         for err in errors:
             loc = err.get("loc", ())
             if err.get("type") == "extra_forbidden" and loc and loc[-1] in _SERVER_OWNED_FIELDS:

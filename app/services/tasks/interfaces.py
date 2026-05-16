@@ -1,26 +1,15 @@
-"""Repository contract for the tasks feature.
-
-ABC + ``@abstractmethod`` is preferred over ``Protocol`` here so that any
-implementation forgetting a method fails at *instantiation* time with a clear
-``TypeError``, rather than at first call with a confusing ``AttributeError``.
-"""
+"""Repository contract for the tasks feature."""
 
 from abc import ABC, abstractmethod
-from typing import Final
+from typing import Any
 
 from app.core.constants import OrderDirection
 from app.services.tasks.constants import Status, TaskSortField
 from app.services.tasks.domain.models import Task
 
-# Fields the repository accepts for patch() and the service uses for change-detection.
-MUTABLE_FIELDS: Final[frozenset[str]] = frozenset({"title", "description", "status", "priority"})
-
 
 class TaskRepositoryInterface(ABC):
-    """``replace`` and ``patch`` return ``(pre_mutation_snapshot, updated_row)``
-    from a single fetch so the service can fire change-detection events without
-    a second read.
-    """
+    """``replace`` and ``patch`` return ``(snapshot_before, row_after)`` from one fetch."""
 
     @abstractmethod
     def add(
@@ -58,7 +47,7 @@ class TaskRepositoryInterface(ABC):
     ) -> tuple[Task, Task]: ...
 
     @abstractmethod
-    def patch(self, task_id: int, **fields: object) -> tuple[Task, Task]: ...
+    def patch(self, task_id: int, **fields: Any) -> tuple[Task, Task]: ...
 
     @abstractmethod
     def delete(self, task_id: int) -> Task: ...

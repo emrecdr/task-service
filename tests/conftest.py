@@ -1,18 +1,18 @@
-# NOTE: this suite is *not* compatible with pytest-xdist. The SQLite :memory:
-# engine is bound via StaticPool to a single shared connection (TIS §6.1) —
-# parallel workers would race against the same schema. Keep tests sequential.
+# StaticPool shares one connection process-wide; tests cannot run with pytest-xdist.
 
 import os
 
-# Lock the env BEFORE app modules import. Settings is module-scoped (TIS §7.6).
+# Lock APP_ENV before app modules import.
 os.environ.setdefault("APP_ENV", "test")
 
 from collections.abc import AsyncIterator, Awaitable, Callable
+from typing import Any
 
 import pytest
 from app.core.database import engine, init_schema
+from app.core.errors import ErrorCode
 from app.main import app
-from httpx import ASGITransport, AsyncClient
+from httpx import ASGITransport, AsyncClient, Response
 from sqlmodel import SQLModel
 
 
@@ -25,8 +25,7 @@ def _fresh_schema() -> None:
 
 @pytest.fixture
 async def client() -> AsyncIterator[AsyncClient]:
-    # ASGITransport does NOT run lifespan automatically — without this wrapper
-    # app.state.event_bus is unset and every request raises AttributeError.
+    # ASGITransport does not run lifespan; wrap it explicitly.
     async with (
         app.router.lifespan_context(app),
         AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c,
@@ -44,3 +43,20 @@ def create_task(client: AsyncClient) -> Callable[..., Awaitable[int]]:
         return int(r.json()["id"])
 
     return _factory
+
+
+def assert_error(
+    response: Response,
+    status_code: int,
+    code: ErrorCode,
+    *,
+    details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Assert the standard error envelope; return the parsed ``error`` block."""
+    assert response.status_code == status_code, response.text
+    err: dict[str, Any] = response.json()["error"]
+    assert err["code"] == code.value, f"expected code={code.value!r}, got {err['code']!r}"
+    if details is not None:
+        assert err["details"] == details
+    assert "request_id" in err
+    return err

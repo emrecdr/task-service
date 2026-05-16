@@ -1,14 +1,4 @@
-"""HTTP routes for the tasks feature — six endpoints under ``/tasks``.
-
-Mounted by :mod:`app.main` under ``settings.api_v1_prefix`` (default ``/v1``).
-DTO validation (incl. ``extra="forbid"`` for read-only-field rejection)
-happens at the framework boundary; the service layer takes the unpacked
-fields as kwargs to stay adapter-agnostic.
-
-Handlers return the raw :class:`Task` row; ``response_model=TaskResponse``
-on the decorator drives both the OpenAPI schema and the actual conversion
-(via ``TaskResponse.model_config.from_attributes=True``).
-"""
+"""HTTP routes for the tasks feature."""
 
 from typing import Annotated
 
@@ -29,11 +19,6 @@ from app.services.tasks.application.dto import (
 from app.services.tasks.dependencies import TaskQueryParamsDep, TaskServiceDep
 from app.services.tasks.domain.models import Task
 
-# Path-bound id type. `le=INT64_MAX` matches the SQLite signed-int64 column
-# ceiling so out-of-range ids are rejected as 422 before reaching the driver.
-# ``format: int64`` is the standard OpenAPI signal for the same bound; some
-# schema-driven test generators (schemathesis) respect ``format`` more
-# reliably than ``maximum`` when shaping integer strategies.
 TaskIdPath = Annotated[int, Path(le=INT64_MAX, json_schema_extra={"format": "int64"})]
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
