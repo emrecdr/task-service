@@ -44,7 +44,7 @@ separate ORM/domain split (TIS §4.1 Decision callout).
 
 ## Enums
 
-`app/services/tasks/enums.py::Status` — `new`, `in_progress`, `completed`. The
+`app/services/tasks/constants.py::Status` — `new`, `in_progress`, `completed`. The
 only valid lifecycle transitions are open; the service enforces no state
 machine in Phase 1 (any → any is allowed).
 

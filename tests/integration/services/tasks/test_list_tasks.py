@@ -1,4 +1,3 @@
-import pytest
 from app.core.errors import ErrorCode
 from httpx import AsyncClient
 
@@ -17,7 +16,6 @@ async def _seed(client: AsyncClient) -> None:
         assert r.status_code == 201
 
 
-@pytest.mark.asyncio
 async def test_list_returns_envelope_shape(client: AsyncClient) -> None:
     await _seed(client)
     r = await client.get("/v1/tasks")
@@ -30,7 +28,6 @@ async def test_list_returns_envelope_shape(client: AsyncClient) -> None:
     assert len(body["items"]) == 4
 
 
-@pytest.mark.asyncio
 async def test_list_default_sort_is_priority_desc(client: AsyncClient) -> None:
     await _seed(client)
     r = await client.get("/v1/tasks")
@@ -38,7 +35,6 @@ async def test_list_default_sort_is_priority_desc(client: AsyncClient) -> None:
     assert priorities == sorted(priorities, reverse=True)
 
 
-@pytest.mark.asyncio
 async def test_list_sort_priority_asc(client: AsyncClient) -> None:
     await _seed(client)
     r = await client.get("/v1/tasks?order_by=priority&order_dir=asc")
@@ -46,7 +42,6 @@ async def test_list_sort_priority_asc(client: AsyncClient) -> None:
     assert priorities == sorted(priorities)
 
 
-@pytest.mark.asyncio
 async def test_list_filter_by_status_multivalue(client: AsyncClient) -> None:
     await _seed(client)
     r = await client.get("/v1/tasks?status=new&status=completed")
@@ -56,7 +51,6 @@ async def test_list_filter_by_status_multivalue(client: AsyncClient) -> None:
     assert body["total"] == 3
 
 
-@pytest.mark.asyncio
 async def test_list_pagination(client: AsyncClient) -> None:
     await _seed(client)
     r = await client.get("/v1/tasks?limit=2&offset=1&order_by=priority&order_dir=desc")
@@ -67,25 +61,21 @@ async def test_list_pagination(client: AsyncClient) -> None:
     assert body["total"] == 4
 
 
-@pytest.mark.asyncio
 async def test_list_limit_above_max_returns_422(client: AsyncClient) -> None:
     r = await client.get("/v1/tasks?limit=10000")
     assert_error(r, 422, ErrorCode.VALIDATION_ERROR)
 
 
-@pytest.mark.asyncio
 async def test_list_negative_offset_returns_422(client: AsyncClient) -> None:
     r = await client.get("/v1/tasks?offset=-1")
     assert_error(r, 422, ErrorCode.VALIDATION_ERROR)
 
 
-@pytest.mark.asyncio
 async def test_list_unknown_status_returns_422(client: AsyncClient) -> None:
     r = await client.get("/v1/tasks?status=bogus")
     assert_error(r, 422, ErrorCode.VALIDATION_ERROR)
 
 
-@pytest.mark.asyncio
 async def test_list_empty_returns_zero_total(client: AsyncClient) -> None:
     r = await client.get("/v1/tasks")
     assert r.status_code == 200

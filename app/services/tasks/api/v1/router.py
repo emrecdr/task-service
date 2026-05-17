@@ -58,6 +58,7 @@ async def list_tasks(
     service: TaskServiceDep,
 ) -> TaskListResponse:
     items, total = await service.list(params=query_params)
+    # model_validate({...}) is intentional: direct TaskListResponse(items=items, ...) fails mypy here.
     return TaskListResponse.model_validate(
         {
             "items": items,

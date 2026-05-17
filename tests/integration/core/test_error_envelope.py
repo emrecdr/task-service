@@ -11,14 +11,12 @@ from httpx import ASGITransport, AsyncClient
 from tests.conftest import assert_error
 
 
-@pytest.mark.asyncio
 async def test_404_envelope_shape(client: AsyncClient) -> None:
     r = await client.get("/v1/tasks/99999")
     err = assert_error(r, 404, ErrorCode.TASK_NOT_FOUND, details={"id": 99999})
     assert "message" in err
 
 
-@pytest.mark.asyncio
 async def test_internal_error_envelope_shape() -> None:
     crash_app = FastAPI()
     crash_app.add_middleware(RequestIDMiddleware)
@@ -36,14 +34,12 @@ async def test_internal_error_envelope_shape() -> None:
     assert "message" in err
 
 
-@pytest.mark.asyncio
 async def test_validation_error_envelope_shape(client: AsyncClient) -> None:
     r = await client.post("/v1/tasks", json={"title": "x", "priority": "not-int"})
     err = assert_error(r, 422, ErrorCode.VALIDATION_ERROR)
     assert "errors" in err["details"]
 
 
-@pytest.mark.asyncio
 async def test_dev_envelope_surfaces_original_error_in_details_cause(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -65,7 +61,6 @@ async def test_dev_envelope_surfaces_original_error_in_details_cause(
     assert err["details"].get("cause") == "ValueError: inner explosion"
 
 
-@pytest.mark.asyncio
 async def test_non_dev_envelope_omits_cause_even_with_original_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -87,7 +82,6 @@ async def test_non_dev_envelope_omits_cause_even_with_original_error(
     assert "cause" not in err["details"]
 
 
-@pytest.mark.asyncio
 async def test_dev_duplicate_task_envelope_includes_integrity_cause(
     monkeypatch: pytest.MonkeyPatch,
     client: AsyncClient,

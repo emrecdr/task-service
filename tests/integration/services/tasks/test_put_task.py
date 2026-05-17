@@ -1,13 +1,11 @@
 from collections.abc import Awaitable, Callable
 
-import pytest
 from app.core.errors import ErrorCode
 from httpx import AsyncClient
 
 from tests.conftest import assert_error
 
 
-@pytest.mark.asyncio
 async def test_put_full_replace_returns_200(client: AsyncClient, create_task: Callable[..., Awaitable[int]]) -> None:
     task_id = await create_task("original")
     r = await client.put(
@@ -23,7 +21,6 @@ async def test_put_full_replace_returns_200(client: AsyncClient, create_task: Ca
     assert body["priority"] == 5
 
 
-@pytest.mark.asyncio
 async def test_put_unknown_id_returns_404(client: AsyncClient) -> None:
     r = await client.put(
         "/v1/tasks/99999",
@@ -32,7 +29,6 @@ async def test_put_unknown_id_returns_404(client: AsyncClient) -> None:
     assert_error(r, 404, ErrorCode.TASK_NOT_FOUND)
 
 
-@pytest.mark.asyncio
 async def test_put_title_collision_returns_409(client: AsyncClient, create_task: Callable[..., Awaitable[int]]) -> None:
     await create_task("first")
     second = await create_task("second")
@@ -43,7 +39,6 @@ async def test_put_title_collision_returns_409(client: AsyncClient, create_task:
     assert_error(r, 409, ErrorCode.DUPLICATE_TASK)
 
 
-@pytest.mark.asyncio
 async def test_put_missing_required_field_returns_422(
     client: AsyncClient, create_task: Callable[..., Awaitable[int]]
 ) -> None:
@@ -52,7 +47,6 @@ async def test_put_missing_required_field_returns_422(
     assert_error(r, 422, ErrorCode.VALIDATION_ERROR)
 
 
-@pytest.mark.asyncio
 async def test_put_rejects_server_owned_id(client: AsyncClient, create_task: Callable[..., Awaitable[int]]) -> None:
     task_id = await create_task("x")
     r = await client.put(
@@ -62,7 +56,6 @@ async def test_put_rejects_server_owned_id(client: AsyncClient, create_task: Cal
     assert_error(r, 422, ErrorCode.READ_ONLY_FIELD, details={"field": "id"})
 
 
-@pytest.mark.asyncio
 async def test_put_rejects_server_owned_created_at(
     client: AsyncClient, create_task: Callable[..., Awaitable[int]]
 ) -> None:

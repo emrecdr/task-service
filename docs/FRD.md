@@ -128,10 +128,11 @@ All routes are mounted under `/v1`. All responses are JSON. All timestamps are R
 
 | Param    | Type                            | Default         | Notes                                                                                                       |
 | -------- | ------------------------------- | --------------- | ----------------------------------------------------------------------------------------------------------- |
-| `status` | `Status` enum                   | —               | Filters to that status only. Multiple values supported via `?status=new&status=in_progress`.                |
-| `sort`   | `priority_asc \| priority_desc` | `priority_desc` | Only `priority` is sortable in Phase 1. Tasks with equal priority are sub-sorted by `created_at` ascending. |
-| `limit`  | int                             | `100`           | 1–500. Values outside this range → 422.                                                                     |
-| `offset` | int                             | `0`             | ≥ 0.                                                                                                        |
+| `status`    | `Status` enum  | —          | Filters to that status only. Multiple values supported via `?status=new&status=in_progress`.                       |
+| `order_by`  | `priority`     | `priority` | Sort column. Only `priority` is sortable in Phase 1; equal priorities are sub-sorted by `created_at` ascending. |
+| `order_dir` | `asc \| desc`  | `desc`     | Sort direction.                                                                                                    |
+| `limit`     | int            | `100`      | 1–500. Values outside this range → 422.                                                                            |
+| `offset`    | int            | `0`        | ≥ 0.                                                                                                               |
 
 ### 3.4 Standardized error body
 
@@ -149,6 +150,8 @@ Every non-2xx response uses the same envelope:
 ```
 
 `code` values are stable strings owned by the domain layer; consumers may switch on them.
+
+Malformed JSON request bodies (which FastAPI would otherwise surface as a raw `400 Bad Request`) are rewrapped by the global handler as `422 validation_error` envelopes so callers always see the same shape.
 
 ## 4. Error Handling Strategy
 

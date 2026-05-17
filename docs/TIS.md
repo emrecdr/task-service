@@ -72,7 +72,7 @@ task-service/
 │       └── tasks/
 │           ├── __init__.py
 │           ├── dependencies.py       # Feature DI providers (repo, service)
-│           ├── enums.py              # Status enum
+│           ├── constants.py          # Status enum, TaskSortField, field bounds
 │           ├── errors.py             # DuplicateTaskError, TaskNotFoundError, …
 │           ├── interfaces.py         # TaskRepositoryInterface (ABC) at feature root
 │           ├── api/

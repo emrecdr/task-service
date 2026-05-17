@@ -8,19 +8,12 @@ from sqlmodel import Session, SQLModel, create_engine
 
 from app.core.config import settings
 
-
-def _engine_kwargs() -> dict[str, object]:
-    """Dialect-aware connection arguments."""
-    if settings.database_url.startswith("sqlite"):
-        # StaticPool shares one in-memory DB across sessions in the process.
-        return {
-            "connect_args": {"check_same_thread": False},
-            "poolclass": StaticPool,
-        }
-    return {}
-
-
-engine = create_engine(settings.database_url, **_engine_kwargs())
+# StaticPool shares one in-memory DB across sessions in the process (Phase 1 SQLite-only).
+engine = create_engine(
+    settings.database_url,
+    connect_args={"check_same_thread": False},
+    poolclass=StaticPool,
+)
 
 
 def init_schema() -> None:
