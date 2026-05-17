@@ -2,21 +2,7 @@
 
 from app.core.event_bus import Event, EventBus
 from app.core.logging import logger
-from app.services.tasks.domain.events import (
-    TaskCompleted,
-    TaskCreated,
-    TaskDeleted,
-    TaskStatusChanged,
-    TaskUpdated,
-)
-
-_TASK_EVENT_TYPES: tuple[type[Event], ...] = (
-    TaskCreated,
-    TaskUpdated,
-    TaskStatusChanged,
-    TaskCompleted,
-    TaskDeleted,
-)
+from app.services.tasks.domain.events import TASK_EVENT_TYPES
 
 
 async def log_event(event: Event) -> None:
@@ -31,5 +17,5 @@ async def log_event(event: Event) -> None:
 
 def register_listeners(bus: EventBus) -> None:
     """Subscribe the feature's listeners to every domain event it emits."""
-    for event_type in _TASK_EVENT_TYPES:
+    for event_type in TASK_EVENT_TYPES:
         bus.subscribe(event_type, log_event)

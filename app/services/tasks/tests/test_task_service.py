@@ -89,7 +89,7 @@ class RecordingBus(EventBus):
         super().__init__()
         self.published: list[Event] = []
 
-    async def publish(self, event: Event, background_tasks: BackgroundTasks) -> None:
+    def publish(self, event: Event, background_tasks: BackgroundTasks) -> None:
         self.published.append(event)
 
 

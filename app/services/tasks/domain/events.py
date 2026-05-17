@@ -4,6 +4,8 @@
 for listeners that only care about the completion transition.
 """
 
+from typing import Final
+
 from app.core.event_bus import Event
 from app.services.tasks.constants import Status
 from app.services.tasks.domain.models import Task
@@ -31,3 +33,13 @@ class TaskCompleted(Event):
 
 class TaskDeleted(Event):
     task: Task
+
+
+# Single source of truth for "every event this feature emits" — keep additions here in lock-step with TaskService.
+TASK_EVENT_TYPES: Final[tuple[type[Event], ...]] = (
+    TaskCreated,
+    TaskUpdated,
+    TaskStatusChanged,
+    TaskCompleted,
+    TaskDeleted,
+)

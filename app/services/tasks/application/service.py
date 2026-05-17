@@ -34,7 +34,7 @@ class TaskService:
         background_tasks: BackgroundTasks,
     ) -> Task:
         task = self._repo.add(title=title, description=description, status=status, priority=priority)
-        await self._events.publish(TaskCreated(task=task), background_tasks)
+        self._events.publish(TaskCreated(task=task), background_tasks)
         return task
 
     async def get(self, task_id: int) -> Task:
@@ -66,7 +66,7 @@ class TaskService:
             status=status,
             priority=priority,
         )
-        await self._publish_update_events(previous, updated, background_tasks)
+        self._publish_update_events(previous, updated, background_tasks)
         return updated
 
     async def patch(
@@ -79,7 +79,7 @@ class TaskService:
         if not fields:
             raise EmptyUpdateError()
         previous, updated = self._repo.patch(task_id, **fields)
-        await self._publish_update_events(previous, updated, background_tasks)
+        self._publish_update_events(previous, updated, background_tasks)
         return updated
 
     async def delete(
@@ -89,9 +89,9 @@ class TaskService:
         background_tasks: BackgroundTasks,
     ) -> None:
         snapshot = self._repo.delete(task_id)
-        await self._events.publish(TaskDeleted(task=snapshot), background_tasks)
+        self._events.publish(TaskDeleted(task=snapshot), background_tasks)
 
-    async def _publish_update_events(
+    def _publish_update_events(
         self,
         previous: Task,
         updated: Task,
@@ -100,12 +100,12 @@ class TaskService:
         changed = [field for field in MUTABLE_FIELDS if getattr(updated, field) != getattr(previous, field)]
         if not changed:
             return
-        await self._events.publish(
+        self._events.publish(
             TaskUpdated(task=updated, previous=previous, changed_fields=changed),
             background_tasks,
         )
         if "status" in changed:
-            await self._events.publish(
+            self._events.publish(
                 TaskStatusChanged(
                     task=updated,
                     from_status=previous.status,
@@ -114,4 +114,4 @@ class TaskService:
                 background_tasks,
             )
             if updated.status is Status.COMPLETED:
-                await self._events.publish(TaskCompleted(task=updated), background_tasks)
+                self._events.publish(TaskCompleted(task=updated), background_tasks)

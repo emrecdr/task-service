@@ -1,6 +1,6 @@
 """SQLModel-backed implementation of :class:`TaskRepositoryInterface`."""
 
-from typing import Any
+from typing import Any, Final
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -11,6 +11,9 @@ from app.services.tasks.constants import Status, TaskSortField
 from app.services.tasks.domain.models import Task
 from app.services.tasks.errors import DuplicateTaskError, TaskNotFoundError
 from app.services.tasks.interfaces import TaskRepositoryInterface
+
+# Fragment of the SQLite UNIQUE-violation message identifying the ``title_key`` index.
+_TITLE_KEY_INDEX_FRAGMENT: Final[str] = "title_key"
 
 
 class SQLModelTaskRepository(TaskRepositoryInterface):
@@ -100,6 +103,6 @@ class SQLModelTaskRepository(TaskRepositoryInterface):
             self._session.commit()
         except IntegrityError as err:
             self._session.rollback()
-            if "title_key" in str(err.orig):
-                raise DuplicateTaskError(details={"title": title}) from err
+            if _TITLE_KEY_INDEX_FRAGMENT in str(err.orig):
+                raise DuplicateTaskError(details={"title": title}, original_error=err) from err
             raise

@@ -64,7 +64,7 @@ The service is built around four design choices, each tied to an objective from 
 **Other rationale, briefly:**
 
 - **`title_key = title.strip().casefold()`** is the canonical uniqueness column; original `title` is preserved verbatim for display. Duplicate detection goes through `title_key`, never `title`. This is what makes "Fix bug" and " fix BUG" the same task.
-- **Single global error handler** converts every `AppError` subclass and every Pydantic `RequestValidationError` into the same envelope. Domain code never builds HTTP responses — `raise DuplicateTaskError(details={"title": …})` is enough.
+- **Single global error handler** converts every `AppError` subclass and every Pydantic `RequestValidationError` into the same envelope. Domain code never builds HTTP responses — `raise DuplicateTaskError(details={"title": …})` is enough. In `dev` mode only, raisers may pass `original_error=` and the envelope's `details.cause` will surface the underlying exception (gated by `settings.expose_stack_traces`); other envs strip it.
 - **All timestamps UTC, always.** `datetime.now(UTC)` everywhere; the Docker image sets `TZ=UTC`. Naïve datetimes are a bug, surfaced by mypy and the `ensure_utc` boundary helper.
 - **Request-ID middleware** generates a UUIDv4 when `X-Request-ID` is absent, binds it to the structlog context, and echoes it on the response. Every log line in a request carries the same id.
 
@@ -90,14 +90,14 @@ app/
 │   └── openapi_responses.py       # Shared 404 / 409 / 422 response specs for the router
 └── services/
     └── tasks/                     # Feature-first vertical slice — full domain/app/infra/api
-        ├── domain/                # Task SQLModel (table=True) + 5 domain events
+        ├── domain/                # Task SQLModel (table=True) + 5 domain events + MUTABLE_FIELDS
         ├── application/           # TaskService (use-case orchestration) + DTOs
         ├── infrastructure/        # SQLModelTaskRepository + event listeners
         ├── api/v1/                # FastAPI router (mounted under /v1/tasks)
-        ├── interfaces.py          # TaskRepositoryInterface ABC + MUTABLE_FIELDS frozenset
+        ├── interfaces.py          # TaskRepositoryInterface ABC
         ├── constants.py           # Status / TaskSortField StrEnums + field bounds
         ├── dependencies.py        # Feature DI providers (repository, service, query params)
-        ├── errors.py              # DuplicateTaskError, TaskNotFoundError, EmptyUpdateError, …
+        ├── errors.py              # DuplicateTaskError, TaskNotFoundError, EmptyUpdateError
         ├── MODULE.md              # Feature-internal doc: invariants, error-table, conventions
         └── tests/                 # Feature-local unit tests (no FastAPI, no DB)
 tests/
@@ -186,12 +186,12 @@ Tests live at four layers, each chosen to give a _different_ kind of confidence:
 The split rule for unit vs. integration: _can this test run with only my feature module imported?_ Yes → unit test, lives in `app/services/<feature>/tests/`. No (needs the full FastAPI app, real HTTP, or another feature) → cross-boundary, lives in `tests/`.
 
 ```bash
-make all                # lint + typecheck + full pytest suite (~75 tests, 95% coverage; gate at 80%)
+make all                # lint + typecheck + full pytest suite (~80 tests, 95% coverage; gate at 80%)
 make test               # full pytest with coverage gate
 make test-unit          # feature-local unit tests only — fast, no FastAPI/DB
 make test-integration   # in-process FastAPI + SQLite :memory:
 make test-contract      # repository ABC conformance — parametrised over every impl
-make hurl-e2e           # 12-scenario black-box Hurl suite against the docker-compose container
+make hurl-e2e           # 13-scenario black-box Hurl suite against the docker-compose container
 make schemathesis       # Schemathesis property tests via pytest (ASGI in-process, no container)
 ```
 
@@ -230,10 +230,11 @@ make compose-down                                   # 3. tear down when done
 
 Use `--very-verbose` for full request/response bodies — invaluable when an `[Asserts]` line fails and you need to see what the server actually sent back.
 
-**The 12 scenarios in `tests/hurl/`.**
+**The 13 scenarios in `tests/hurl/`.**
 
 | Scenario                             | What it pins down                                                                                                                                 |
 | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `aaa_sort_priority.hurl`             | Runs first (empty DB); priority sort default + ASC/DESC + tie-break by `created_at` + invalid `order_by` / `order_dir` rejections                 |
 | `healthz.hurl`                       | `GET /healthz` returns 200 (no I/O — process is alive)                                                                                            |
 | `readyz.hurl`                        | `GET /readyz` does a real DB round-trip and returns 200                                                                                           |
 | `request_id_propagation.hurl`        | `X-Request-ID` echoed when caller sends one; generated when absent                                                                                |
@@ -275,6 +276,8 @@ Use `--very-verbose` for full request/response bodies — invaluable when an `[A
 | `test`    | `WARNING`           | no                    | no                              |
 | `qa`      | `INFO`              | yes                   | no                              |
 | `prod`    | `INFO`              | yes                   | no                              |
+
+In `dev`, the error envelope's `details.cause` carries the underlying exception (`"<ExceptionType>: <message>"`) whenever the raiser passes `original_error=`. Other envs strip it. This is the runtime form of "stack traces in error responses" for Phase 1; full Python tracebacks are not exposed.
 
 ### Examples
 

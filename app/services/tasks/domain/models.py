@@ -14,8 +14,8 @@ from app.services.tasks.constants import (
     Status,
 )
 
-# Fields the domain accepts for replace/patch mutation and the service uses for change-detection.
-MUTABLE_FIELDS: Final[frozenset[str]] = frozenset({"title", "description", "status", "priority"})
+# Canonical order is the field-ordering contract for ``TaskUpdated.changed_fields`` event payloads.
+MUTABLE_FIELDS: Final[tuple[str, ...]] = ("title", "description", "status", "priority")
 
 
 class Task(SQLModel, table=True):
@@ -85,12 +85,11 @@ class Task(SQLModel, table=True):
 
     def apply_patch(self, fields: dict[str, Any]) -> None:
         """Apply a partial update; raise ``ValueError`` for any non-mutable key."""
-        unknown = set(fields) - MUTABLE_FIELDS
+        unknown = set(fields).difference(MUTABLE_FIELDS)
         if unknown:
             raise ValueError(f"unknown patch fields: {sorted(unknown)}")
-        if "title" in fields:
-            self.title, self.title_key = Task.clean_title(fields["title"])
         for field, value in fields.items():
             if field == "title":
-                continue
-            setattr(self, field, value)
+                self.title, self.title_key = Task.clean_title(value)
+            else:
+                setattr(self, field, value)

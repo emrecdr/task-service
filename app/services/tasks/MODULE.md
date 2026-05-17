@@ -80,7 +80,10 @@ envelope and surfaces as 500.
 | `DuplicateTaskError`   | 409    | `duplicate_task`    |
 | `TaskNotFoundError`    | 404    | `task_not_found`    |
 | `EmptyUpdateError`     | 422    | `empty_update`      |
-| `ReadOnlyFieldError`   | 422    | `read_only_field`   |
+
+`read_only_field` (422) is emitted by the core handler when the request body
+sets a server-managed field (`id`, `created_at`); the exception class
+(`ReadOnlyFieldError`) lives in `app.core.errors`, not this feature.
 
 ## Endpoints
 

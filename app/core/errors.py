@@ -9,6 +9,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app.core.config import settings
+
 
 class ErrorCode(StrEnum):
     VALIDATION_ERROR = "validation_error"
@@ -53,6 +55,13 @@ class NotFoundError(AppError):
     status_code = status.HTTP_404_NOT_FOUND
 
 
+class ReadOnlyFieldError(ValidationError):
+    """Raised when a request body sets a server-managed field (``id``, ``created_at``)."""
+
+    error_code = ErrorCode.READ_ONLY_FIELD
+    detail = "Field is server-managed and cannot be set by the caller."
+
+
 _SERVER_OWNED_FIELDS = frozenset({"id", "created_at"})
 
 
@@ -77,18 +86,26 @@ def _envelope(
     )
 
 
+def _envelope_from_app_error(request: Request, exc: AppError) -> JSONResponse:
+    """Build the standard envelope from an ``AppError``; surface ``cause`` only in dev."""
+    details = dict(exc.details)
+    if settings.expose_stack_traces and exc.original_error is not None:
+        details["cause"] = f"{type(exc.original_error).__name__}: {exc.original_error}"
+    return _envelope(
+        request=request,
+        code=exc.error_code,
+        message=exc.detail,
+        details=details,
+        status_code=exc.status_code,
+    )
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     """Wire the global handlers for ``AppError`` and Pydantic validation errors."""
 
     @app.exception_handler(AppError)
     async def _app_error_handler(request: Request, exc: AppError) -> JSONResponse:
-        return _envelope(
-            request=request,
-            code=exc.error_code,
-            message=exc.detail,
-            details=exc.details,
-            status_code=exc.status_code,
-        )
+        return _envelope_from_app_error(request, exc)
 
     @app.exception_handler(StarletteHTTPException)
     async def _http_exception_handler(request: Request, exc: StarletteHTTPException) -> Response:
@@ -112,12 +129,9 @@ def register_exception_handlers(app: FastAPI) -> None:
         for err in errors:
             loc = err.get("loc", ())
             if err.get("type") == "extra_forbidden" and loc and loc[-1] in _SERVER_OWNED_FIELDS:
-                return _envelope(
-                    request=request,
-                    code=ErrorCode.READ_ONLY_FIELD,
-                    message="Field is server-managed and cannot be set by the caller.",
-                    details={"field": loc[-1]},
-                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                return _envelope_from_app_error(
+                    request,
+                    ReadOnlyFieldError(details={"field": loc[-1]}),
                 )
         return _envelope(
             request=request,

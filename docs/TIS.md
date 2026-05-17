@@ -235,7 +235,9 @@ The five `Task*` events are `pydantic.BaseModel` subclasses inheriting from `cor
 
 > **Implements:** FRD §4 (error code list, HTTP mapping, envelope rules).
 
-`services/tasks/errors.py` defines `DuplicateTaskError`, `TaskNotFoundError`, `EmptyUpdateError`, `ReadOnlyFieldError`. Each one subclasses a base class from `app/core/errors.py` (`ConflictError`, `NotFoundError`, `ValidationError`) and pins its `error_code` and default `detail`. Domain code raises these by type; the global handler (§8.1) translates them into the standard envelope. **Never inherit from plain `Exception`** in feature code — that bypasses the handler and returns a 500 with no envelope.
+`services/tasks/errors.py` defines `DuplicateTaskError`, `TaskNotFoundError`, `EmptyUpdateError`. Each one subclasses a base class from `app/core/errors.py` (`ConflictError`, `NotFoundError`, `ValidationError`) and pins its `error_code` and default `detail`. Domain code raises these by type; the global handler (§8.1) translates them into the standard envelope. **Never inherit from plain `Exception`** in feature code — that bypasses the handler and returns a 500 with no envelope.
+
+`ReadOnlyFieldError` lives in `app/core/errors.py` rather than the feature, because server-owned-field rejection (`id`, `created_at`) is a framework-level concern: every feature with server-managed fields routes through the same global validation handler (§8.1), which instantiates `ReadOnlyFieldError` itself — feature code does not raise it.
 
 ---
 

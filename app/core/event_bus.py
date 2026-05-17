@@ -31,7 +31,7 @@ class EventBus:
         """Register ``handler`` for ``event_type``. Handlers fire in subscription order."""
         self._listeners[event_type].append(handler)
 
-    async def publish(self, event: Event, background_tasks: BackgroundTasks) -> None:
+    def publish(self, event: Event, background_tasks: BackgroundTasks) -> None:
         """Schedule every handler for ``type(event)`` to run after the response."""
         for handler in self._listeners[type(event)]:
             background_tasks.add_task(handler, event)
