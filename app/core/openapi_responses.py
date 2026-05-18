@@ -1,8 +1,8 @@
-from typing import Any
+from typing import Any, Final
 
 from app.core.errors import ErrorCode
 
-_ENVELOPE_DESCRIPTION = (
+_ENVELOPE_DESCRIPTION: Final[str] = (
     "Standard error envelope. Branch on ``error.code`` for the machine-readable "
     "failure mode; ``error.message`` is human-readable and may change wording; "
     "``error.request_id`` echoes the ``X-Request-ID`` header for log correlation."
@@ -20,7 +20,7 @@ def _envelope_example(code: ErrorCode, message: str, details: dict[str, Any]) ->
     }
 
 
-NOT_FOUND_RESPONSE: dict[str, Any] = {
+NOT_FOUND_RESPONSE: Final[dict[str, Any]] = {
     "description": _ENVELOPE_DESCRIPTION,
     "content": {
         "application/json": {
@@ -34,7 +34,7 @@ NOT_FOUND_RESPONSE: dict[str, Any] = {
 }
 
 
-CONFLICT_RESPONSE: dict[str, Any] = {
+CONFLICT_RESPONSE: Final[dict[str, Any]] = {
     "description": _ENVELOPE_DESCRIPTION,
     "content": {
         "application/json": {
@@ -48,7 +48,7 @@ CONFLICT_RESPONSE: dict[str, Any] = {
 }
 
 
-VALIDATION_RESPONSE: dict[str, Any] = {
+VALIDATION_RESPONSE: Final[dict[str, Any]] = {
     "description": _ENVELOPE_DESCRIPTION,
     "content": {
         "application/json": {

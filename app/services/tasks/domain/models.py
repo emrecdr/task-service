@@ -1,5 +1,5 @@
 from datetime import UTC, datetime
-from typing import Any, Final
+from typing import Any, Final, Self
 
 from sqlmodel import Field, SQLModel
 
@@ -51,7 +51,7 @@ class Task(SQLModel, table=True):
         description: str | None,
         status: Status,
         priority: int,
-    ) -> "Task":
+    ) -> Self:
         """Build a Task from caller input, applying normalisation invariants."""
         cleaned_title, title_key = cls.clean_title(title)
         return cls(
@@ -62,9 +62,9 @@ class Task(SQLModel, table=True):
             priority=priority,
         )
 
-    def snapshot(self) -> "Task":
+    def snapshot(self) -> Self:
         """Detached, revalidated copy for event payloads."""
-        return Task.model_validate(self.model_dump())
+        return type(self).model_validate(self.model_dump())
 
     def apply_replace(
         self,

@@ -1,15 +1,12 @@
 """In-process pub/sub event bus; listeners run via FastAPI ``BackgroundTasks`` after the response."""
 
 import collections
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import Any
 from uuid import UUID, uuid4
 
 from fastapi import BackgroundTasks
 from pydantic import BaseModel, ConfigDict, Field
-
-type EventHandler = Callable[[Any], Any]
 
 
 class Event(BaseModel):
@@ -17,6 +14,9 @@ class Event(BaseModel):
 
     id: UUID = Field(default_factory=uuid4)
     occurred_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+type EventHandler = Callable[[Event], Awaitable[None]]
 
 
 class EventBus:

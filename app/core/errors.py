@@ -1,7 +1,7 @@
 """Error code enum, ``AppError`` hierarchy, and global exception handlers."""
 
 from enum import StrEnum
-from typing import Any
+from typing import Any, Final
 
 from fastapi import FastAPI, Request, status
 from fastapi.exception_handlers import http_exception_handler as default_http_exception_handler
@@ -58,7 +58,7 @@ class ReadOnlyFieldError(ValidationError):
     detail = "Field is server-managed and cannot be set by the caller."
 
 
-_SERVER_OWNED_FIELDS = frozenset({"id", "created_at"})
+_SERVER_OWNED_FIELDS: Final[frozenset[str]] = frozenset({"id", "created_at"})
 
 
 def _envelope(

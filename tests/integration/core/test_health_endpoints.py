@@ -1,5 +1,5 @@
 import json
-from typing import Any
+from typing import Never
 
 import pytest
 from app.core.config import settings
@@ -23,7 +23,7 @@ async def test_readyz_returns_ready_when_db_is_reachable(client: AsyncClient) ->
 
 
 class _FailingSession:
-    def scalar(self, _stmt: object) -> Any:
+    def scalar(self, _stmt: object) -> Never:
         raise OperationalError("SELECT 1", None, Exception("boom"))
 
 
