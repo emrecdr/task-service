@@ -31,7 +31,6 @@ def test_list_orders_by_priority_then_created_at(session: Session) -> None:
         offset=0,
     )
     assert total == 3
-    # Priority 5 first; among ties, oldest created first.
     assert [t.id for t in items_desc] == [a.id, c.id, b.id]
 
     items_asc, _ = repo.list(

@@ -1,5 +1,3 @@
-"""The ``Task`` domain entity (doubles as SQLModel row)."""
-
 from datetime import UTC, datetime
 from typing import Any, Final
 
@@ -35,7 +33,6 @@ class Task(SQLModel, table=True):
 
     @staticmethod
     def normalize_title(title: str) -> str:
-        """Return the canonical uniqueness key for a title."""
         return title.strip().casefold()
 
     @classmethod

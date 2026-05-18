@@ -1,5 +1,3 @@
-"""Structured logging via ``structlog``."""
-
 import sys
 
 import structlog
@@ -8,7 +6,6 @@ from app.core.config import settings
 
 
 def setup_logging() -> None:
-    """Configure ``structlog`` — JSON in qa/prod, console renderer otherwise."""
     processors: list[structlog.types.Processor] = [
         structlog.contextvars.merge_contextvars,
         structlog.processors.add_log_level,

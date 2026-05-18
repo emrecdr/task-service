@@ -1,5 +1,3 @@
-"""HTTP routes for the tasks feature."""
-
 from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, Path, status
@@ -58,7 +56,6 @@ async def list_tasks(
     service: TaskServiceDep,
 ) -> TaskListResponse:
     items, total = await service.list(params=query_params)
-    # model_validate({...}) is intentional: direct TaskListResponse(items=items, ...) fails mypy here.
     return TaskListResponse.model_validate(
         {
             "items": items,

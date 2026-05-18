@@ -1,5 +1,3 @@
-"""Shared datetime utilities."""
-
 from datetime import UTC, datetime
 
 

@@ -1,5 +1,3 @@
-"""Application-wide constants."""
-
 from enum import StrEnum
 from typing import Final
 

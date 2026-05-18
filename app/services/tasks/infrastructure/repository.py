@@ -1,5 +1,3 @@
-"""SQLModel-backed implementation of :class:`TaskRepositoryInterface`."""
-
 from typing import Any, Final
 
 from sqlalchemy import func, select
@@ -8,7 +6,7 @@ from sqlmodel import Session, col
 
 from app.core.constants import OrderDirection
 from app.services.tasks.constants import Status, TaskSortField
-from app.services.tasks.domain.models import Task
+from app.services.tasks.domain.models import MUTABLE_FIELDS, Task
 from app.services.tasks.errors import DuplicateTaskError, TaskNotFoundError
 from app.services.tasks.interfaces import TaskRepositoryInterface
 
@@ -87,7 +85,8 @@ class SQLModelTaskRepository(TaskRepositoryInterface):
         task = self.get(task_id)
         previous = task.snapshot()
         task.apply_patch(fields)
-        self._commit_or_translate(task.title)
+        if any(getattr(task, f) != getattr(previous, f) for f in MUTABLE_FIELDS):
+            self._commit_or_translate(task.title)
         return previous, task
 
     def delete(self, task_id: int) -> Task:

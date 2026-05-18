@@ -1,5 +1,3 @@
-"""Unit tests for the Task domain entity."""
-
 import pytest
 
 from app.services.tasks.constants import Status

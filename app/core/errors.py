@@ -22,8 +22,6 @@ class ErrorCode(StrEnum):
 
 
 class AppError(Exception):
-    """Base class for every domain-typed exception."""
-
     status_code: int = status.HTTP_500_INTERNAL_SERVER_ERROR
     detail: str = "An unexpected internal server error occurred."
     error_code: ErrorCode = ErrorCode.INTERNAL_ERROR
@@ -56,8 +54,6 @@ class NotFoundError(AppError):
 
 
 class ReadOnlyFieldError(ValidationError):
-    """Raised when a request body sets a server-managed field (``id``, ``created_at``)."""
-
     error_code = ErrorCode.READ_ONLY_FIELD
     detail = "Field is server-managed and cannot be set by the caller."
 
@@ -87,7 +83,6 @@ def _envelope(
 
 
 def _envelope_from_app_error(request: Request, exc: AppError) -> JSONResponse:
-    """Build the standard envelope from an ``AppError``; surface ``cause`` only in dev."""
     details = dict(exc.details)
     if settings.expose_stack_traces and exc.original_error is not None:
         details["cause"] = f"{type(exc.original_error).__name__}: {exc.original_error}"
@@ -101,8 +96,6 @@ def _envelope_from_app_error(request: Request, exc: AppError) -> JSONResponse:
 
 
 def register_exception_handlers(app: FastAPI) -> None:
-    """Wire the global handlers for ``AppError`` and Pydantic validation errors."""
-
     @app.exception_handler(AppError)
     async def _app_error_handler(request: Request, exc: AppError) -> JSONResponse:
         return _envelope_from_app_error(request, exc)

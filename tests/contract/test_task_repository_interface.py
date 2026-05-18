@@ -1,5 +1,3 @@
-"""Contract conformance tests parametrised over every ``TaskRepositoryInterface`` implementation."""
-
 from collections.abc import Callable, Iterator
 
 import pytest
@@ -121,7 +119,7 @@ def test_patch_applies_partial_update(repo: TaskRepositoryInterface) -> None:
     assert previous.priority == 2
     assert previous.title == "x"
     assert patched.priority == 5
-    assert patched.title == "x"  # untouched
+    assert patched.title == "x"
 
 
 def test_delete_returns_snapshot_and_removes(repo: TaskRepositoryInterface) -> None:
@@ -135,6 +133,6 @@ def test_delete_returns_snapshot_and_removes(repo: TaskRepositoryInterface) -> N
 
 
 def test_task_sort_field_values_match_task_columns() -> None:
-    """``TaskSortField.value`` is used as a ``Task`` attribute name by ``repository.list()``."""
+    # repository.list() uses TaskSortField.value as a getattr name on Task.
     for member in TaskSortField:
         assert hasattr(Task, member.value), f"{member.name}={member.value!r} has no matching Task attribute"

@@ -13,8 +13,6 @@ type EventHandler = Callable[[Any], Any]
 
 
 class Event(BaseModel):
-    """Base class for every domain event."""
-
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     id: UUID = Field(default_factory=uuid4)
@@ -22,16 +20,13 @@ class Event(BaseModel):
 
 
 class EventBus:
-    """Subscribe handlers to event types; publish via BackgroundTasks."""
-
     def __init__(self) -> None:
         self._listeners: dict[type[Event], list[EventHandler]] = collections.defaultdict(list)
 
     def subscribe(self, event_type: type[Event], handler: EventHandler) -> None:
-        """Register ``handler`` for ``event_type``. Handlers fire in subscription order."""
+        # Handlers fire in subscription order.
         self._listeners[event_type].append(handler)
 
     def publish(self, event: Event, background_tasks: BackgroundTasks) -> None:
-        """Schedule every handler for ``type(event)`` to run after the response."""
         for handler in self._listeners[type(event)]:
             background_tasks.add_task(handler, event)

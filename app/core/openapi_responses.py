@@ -1,5 +1,3 @@
-"""Shared OpenAPI response blocks for the standard error envelope."""
-
 from typing import Any
 
 from app.core.errors import ErrorCode

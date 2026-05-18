@@ -1,5 +1,3 @@
-"""Liveness (``/healthz``) and readiness (``/readyz``) endpoints."""
-
 from fastapi import APIRouter, status
 from fastapi.responses import JSONResponse
 from sqlalchemy import text

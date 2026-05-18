@@ -1,5 +1,3 @@
-"""HTTP middlewares for cross-cutting request concerns."""
-
 from uuid import uuid4
 
 import structlog

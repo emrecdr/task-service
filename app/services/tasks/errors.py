@@ -1,5 +1,3 @@
-"""Domain exceptions for the tasks feature."""
-
 from app.core.errors import ConflictError, ErrorCode, NotFoundError, ValidationError
 
 

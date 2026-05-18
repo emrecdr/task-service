@@ -1,5 +1,3 @@
-"""Integration tests for /healthz and /readyz operational endpoints (FRD §3.1)."""
-
 import json
 from typing import Any
 
@@ -25,14 +23,11 @@ async def test_readyz_returns_ready_when_db_is_reachable(client: AsyncClient) ->
 
 
 class _FailingSession:
-    """Minimal stand-in for a SQLModel ``Session`` whose ``scalar`` raises ``OperationalError``."""
-
     def scalar(self, _stmt: object) -> Any:
         raise OperationalError("SELECT 1", None, Exception("boom"))
 
 
 async def test_readyz_in_dev_surfaces_db_error_detail(monkeypatch: pytest.MonkeyPatch) -> None:
-    """In dev, ``expose_stack_traces`` is True — leak driver-error text into the 503 body."""
     monkeypatch.setattr(settings, "app_env", Environment.DEV)
     response = await readiness(_FailingSession())  # type: ignore[arg-type]
 
@@ -44,7 +39,6 @@ async def test_readyz_in_dev_surfaces_db_error_detail(monkeypatch: pytest.Monkey
 
 
 async def test_readyz_outside_dev_omits_db_error_detail(monkeypatch: pytest.MonkeyPatch) -> None:
-    """In prod, the raw driver text must not leak — the body is just ``{status: not_ready}``."""
     monkeypatch.setattr(settings, "app_env", Environment.PROD)
     response = await readiness(_FailingSession())  # type: ignore[arg-type]
 

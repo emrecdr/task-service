@@ -1,5 +1,3 @@
-"""Use-case orchestration for the tasks feature; owns event-firing rules."""
-
 from typing import Any
 
 from fastapi import BackgroundTasks

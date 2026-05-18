@@ -1,5 +1,3 @@
-"""SQLModel engine + session factory."""
-
 from collections.abc import Generator
 from contextlib import contextmanager
 
@@ -17,12 +15,10 @@ engine = create_engine(
 
 
 def init_schema() -> None:
-    """Create all SQLModel-declared tables on the bound engine."""
     SQLModel.metadata.create_all(engine)
 
 
 @contextmanager
 def session_factory() -> Generator[Session]:
-    """Yield a SQLModel ``Session`` bound to the module-level engine."""
     with Session(engine) as session:
         yield session

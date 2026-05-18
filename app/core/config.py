@@ -1,5 +1,3 @@
-"""Application settings."""
-
 import logging
 import os
 
@@ -37,12 +35,10 @@ class Settings(BaseSettings):
 
     @property
     def json_logs(self) -> bool:
-        """``True`` for environments where structured JSON logs are required."""
         return self.app_env in {Environment.QA, Environment.PROD}
 
     @property
     def expose_stack_traces(self) -> bool:
-        """Only ``dev`` exposes stack traces in error responses."""
         return self.app_env == Environment.DEV
 
 

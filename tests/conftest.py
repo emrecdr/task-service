@@ -15,6 +15,8 @@ from app.main import app
 from httpx import ASGITransport, AsyncClient, Response
 from sqlmodel import SQLModel
 
+type CreateTask = Callable[..., Awaitable[int]]
+
 
 @pytest.fixture(autouse=True)
 def _fresh_schema() -> None:
@@ -34,7 +36,7 @@ async def client() -> AsyncIterator[AsyncClient]:
 
 
 @pytest.fixture
-def create_task(client: AsyncClient) -> Callable[..., Awaitable[int]]:
+def create_task(client: AsyncClient) -> CreateTask:
     """Factory: ``await create_task(title, priority=3)`` → new task id."""
 
     async def _factory(title: str, priority: int = 3) -> int:

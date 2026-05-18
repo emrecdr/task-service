@@ -1,5 +1,3 @@
-"""FastAPI dependency providers for the tasks feature."""
-
 from typing import Annotated
 
 from fastapi import Depends, Query

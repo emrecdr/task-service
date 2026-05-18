@@ -1,12 +1,10 @@
-from collections.abc import Awaitable, Callable
-
 from app.core.errors import ErrorCode
 from httpx import AsyncClient
 
-from tests.conftest import assert_error
+from tests.conftest import CreateTask, assert_error
 
 
-async def test_put_full_replace_returns_200(client: AsyncClient, create_task: Callable[..., Awaitable[int]]) -> None:
+async def test_put_full_replace_returns_200(client: AsyncClient, create_task: CreateTask) -> None:
     task_id = await create_task("original")
     r = await client.put(
         f"/v1/tasks/{task_id}",
@@ -29,7 +27,7 @@ async def test_put_unknown_id_returns_404(client: AsyncClient) -> None:
     assert_error(r, 404, ErrorCode.TASK_NOT_FOUND)
 
 
-async def test_put_title_collision_returns_409(client: AsyncClient, create_task: Callable[..., Awaitable[int]]) -> None:
+async def test_put_title_collision_returns_409(client: AsyncClient, create_task: CreateTask) -> None:
     await create_task("first")
     second = await create_task("second")
     r = await client.put(
@@ -39,15 +37,13 @@ async def test_put_title_collision_returns_409(client: AsyncClient, create_task:
     assert_error(r, 409, ErrorCode.DUPLICATE_TASK)
 
 
-async def test_put_missing_required_field_returns_422(
-    client: AsyncClient, create_task: Callable[..., Awaitable[int]]
-) -> None:
+async def test_put_missing_required_field_returns_422(client: AsyncClient, create_task: CreateTask) -> None:
     task_id = await create_task("x")
     r = await client.put(f"/v1/tasks/{task_id}", json={"title": "y"})
     assert_error(r, 422, ErrorCode.VALIDATION_ERROR)
 
 
-async def test_put_rejects_server_owned_id(client: AsyncClient, create_task: Callable[..., Awaitable[int]]) -> None:
+async def test_put_rejects_server_owned_id(client: AsyncClient, create_task: CreateTask) -> None:
     task_id = await create_task("x")
     r = await client.put(
         f"/v1/tasks/{task_id}",
@@ -56,9 +52,7 @@ async def test_put_rejects_server_owned_id(client: AsyncClient, create_task: Cal
     assert_error(r, 422, ErrorCode.READ_ONLY_FIELD, details={"field": "id"})
 
 
-async def test_put_rejects_server_owned_created_at(
-    client: AsyncClient, create_task: Callable[..., Awaitable[int]]
-) -> None:
+async def test_put_rejects_server_owned_created_at(client: AsyncClient, create_task: CreateTask) -> None:
     task_id = await create_task("x")
     r = await client.put(
         f"/v1/tasks/{task_id}",

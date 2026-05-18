@@ -1,6 +1,5 @@
 """Service-layer unit tests for event-firing rules — fake repo + recording bus."""
 
-from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -37,7 +36,6 @@ class FakeRepo(TaskRepositoryInterface):
     ) -> Task:
         task = Task.from_input(title=title, description=description, status=status, priority=priority)
         task.id = self._next_id
-        task.created_at = datetime.now(UTC)
         self._rows[task.id] = task
         self._next_id += 1
         return task
@@ -94,44 +92,50 @@ class RecordingBus(EventBus):
 
 
 @pytest.fixture
-def setup() -> tuple[TaskService, FakeRepo, RecordingBus, BackgroundTasks]:
-    repo = FakeRepo()
-    bus = RecordingBus()
-    bt = BackgroundTasks()
-    return TaskService(repo=repo, events=bus), repo, bus, bt
+def repo() -> FakeRepo:
+    return FakeRepo()
+
+
+@pytest.fixture
+def bus() -> RecordingBus:
+    return RecordingBus()
+
+
+@pytest.fixture
+def service(repo: FakeRepo, bus: RecordingBus) -> TaskService:
+    return TaskService(repo=repo, events=bus)
+
+
+@pytest.fixture
+def bt() -> BackgroundTasks:
+    return BackgroundTasks()
 
 
 class TestCreate:
     async def test_create_fires_task_created(
-        self, setup: tuple[TaskService, FakeRepo, RecordingBus, BackgroundTasks]
+        self, service: TaskService, bus: RecordingBus, bt: BackgroundTasks
     ) -> None:
-        service, _, bus, bt = setup
         await service.create(title="a", description=None, status=Status.NEW, priority=1, background_tasks=bt)
         assert len(bus.published) == 1
         assert isinstance(bus.published[0], TaskCreated)
 
 
 class TestPatch:
-    async def test_empty_body_raises_empty_update(
-        self, setup: tuple[TaskService, FakeRepo, RecordingBus, BackgroundTasks]
-    ) -> None:
-        service, _, _, bt = setup
+    async def test_empty_body_raises_empty_update(self, service: TaskService, bt: BackgroundTasks) -> None:
         with pytest.raises(EmptyUpdateError):
             await service.patch(1, fields={}, background_tasks=bt)
 
     async def test_no_actual_change_does_not_fire_updated(
-        self, setup: tuple[TaskService, FakeRepo, RecordingBus, BackgroundTasks]
+        self, service: TaskService, bus: RecordingBus, bt: BackgroundTasks
     ) -> None:
-        service, _, bus, bt = setup
         await service.create(title="a", description=None, status=Status.NEW, priority=1, background_tasks=bt)
         bus.published.clear()
         await service.patch(1, fields={"priority": 1}, background_tasks=bt)
         assert bus.published == []
 
     async def test_status_to_in_progress_fires_updated_and_status_changed_only(
-        self, setup: tuple[TaskService, FakeRepo, RecordingBus, BackgroundTasks]
+        self, service: TaskService, bus: RecordingBus, bt: BackgroundTasks
     ) -> None:
-        service, _, bus, bt = setup
         await service.create(title="a", description=None, status=Status.NEW, priority=1, background_tasks=bt)
         bus.published.clear()
         await service.patch(1, fields={"status": Status.IN_PROGRESS}, background_tasks=bt)
@@ -141,9 +145,8 @@ class TestPatch:
         assert TaskCompleted not in types
 
     async def test_status_to_completed_fires_all_three(
-        self, setup: tuple[TaskService, FakeRepo, RecordingBus, BackgroundTasks]
+        self, service: TaskService, bus: RecordingBus, bt: BackgroundTasks
     ) -> None:
-        service, _, bus, bt = setup
         await service.create(title="a", description=None, status=Status.NEW, priority=1, background_tasks=bt)
         bus.published.clear()
         await service.patch(1, fields={"status": Status.COMPLETED}, background_tasks=bt)
@@ -153,9 +156,8 @@ class TestPatch:
         assert TaskCompleted in types
 
     async def test_non_status_change_fires_only_task_updated(
-        self, setup: tuple[TaskService, FakeRepo, RecordingBus, BackgroundTasks]
+        self, service: TaskService, bus: RecordingBus, bt: BackgroundTasks
     ) -> None:
-        service, _, bus, bt = setup
         await service.create(title="a", description=None, status=Status.NEW, priority=1, background_tasks=bt)
         bus.published.clear()
         await service.patch(1, fields={"priority": 5}, background_tasks=bt)
@@ -165,9 +167,8 @@ class TestPatch:
 
 class TestDelete:
     async def test_fires_task_deleted_with_snapshot(
-        self, setup: tuple[TaskService, FakeRepo, RecordingBus, BackgroundTasks]
+        self, service: TaskService, bus: RecordingBus, bt: BackgroundTasks
     ) -> None:
-        service, _, bus, bt = setup
         await service.create(title="a", description=None, status=Status.NEW, priority=1, background_tasks=bt)
         bus.published.clear()
         await service.delete(1, background_tasks=bt)

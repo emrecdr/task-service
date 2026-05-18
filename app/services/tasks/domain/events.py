@@ -1,9 +1,3 @@
-"""Domain events for the tasks feature.
-
-``TaskCompleted`` is a convenience event derived from ``TaskStatusChanged``
-for listeners that only care about the completion transition.
-"""
-
 from typing import Final
 
 from app.core.event_bus import Event
@@ -35,7 +29,7 @@ class TaskDeleted(Event):
     task: Task
 
 
-# Single source of truth for "every event this feature emits" — keep additions here in lock-step with TaskService.
+# Listener registration enumerates these; keep in lock-step with TaskService.
 TASK_EVENT_TYPES: Final[tuple[type[Event], ...]] = (
     TaskCreated,
     TaskUpdated,

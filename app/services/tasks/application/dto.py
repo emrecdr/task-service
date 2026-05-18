@@ -1,5 +1,3 @@
-"""Request and response DTOs for the tasks feature."""
-
 from datetime import datetime
 from typing import Annotated
 
@@ -33,8 +31,6 @@ class TaskCreate(BaseModel):
 
 
 class TaskPatch(BaseModel):
-    """All fields optional; empty payload raises ``EmptyUpdateError`` at the service."""
-
     model_config = ConfigDict(
         extra="forbid",
         json_schema_extra={"minProperties": 1},
@@ -69,8 +65,6 @@ class TaskListResponse(BaseModel):
 
 
 class TaskListParams(BaseModel):
-    """Validated query parameters for ``GET /v1/tasks``."""
-
     model_config = ConfigDict(extra="forbid")
 
     statuses: list[Status] | None = Field(
