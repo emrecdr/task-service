@@ -32,6 +32,10 @@ lint: ## 🧹 Ruff check + format + Bandit security scan
 typecheck: ## 🔍 mypy strict on app + tests
 	uv run mypy
 
+typecheck-fresh: ## 🔍 mypy with .mypy_cache wiped — mirrors CI's clean container
+	rm -rf .mypy_cache
+	uv run mypy
+
 # --- Tests -----------------------------------------------------------------
 
 test: ## 🧪 Run all tests with coverage gate (--cov-fail-under=80)
