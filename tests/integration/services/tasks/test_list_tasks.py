@@ -52,12 +52,32 @@ async def test_list_filter_by_status_multivalue(client: AsyncClient) -> None:
 
 
 async def test_list_pagination(client: AsyncClient) -> None:
+    """Seeded priorities are 5,3,2,1 — offset=1, limit=2 desc must return the middle window."""
     await _seed(client)
     r = await client.get("/v1/tasks?limit=2&offset=1&order_by=priority&order_dir=desc")
     body = r.json()
     assert body["limit"] == 2
     assert body["offset"] == 1
-    assert len(body["items"]) == 2
+    assert body["total"] == 4
+    priorities = [t["priority"] for t in body["items"]]
+    assert priorities == [3, 2]
+    titles = [t["title"] for t in body["items"]]
+    assert titles == ["c", "d"]
+
+
+async def test_list_pagination_offset_zero_returns_top_of_window(client: AsyncClient) -> None:
+    await _seed(client)
+    r = await client.get("/v1/tasks?limit=2&offset=0&order_by=priority&order_dir=desc")
+    body = r.json()
+    priorities = [t["priority"] for t in body["items"]]
+    assert priorities == [5, 3]
+
+
+async def test_list_pagination_offset_past_end_returns_empty_items(client: AsyncClient) -> None:
+    await _seed(client)
+    r = await client.get("/v1/tasks?limit=2&offset=10")
+    body = r.json()
+    assert body["items"] == []
     assert body["total"] == 4
 
 

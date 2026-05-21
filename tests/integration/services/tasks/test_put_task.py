@@ -24,7 +24,38 @@ async def test_put_unknown_id_returns_404(client: AsyncClient) -> None:
         "/v1/tasks/99999",
         json={"title": "x", "priority": 1},
     )
-    assert_error(r, 404, ErrorCode.TASK_NOT_FOUND)
+    assert_error(r, 404, ErrorCode.TASK_NOT_FOUND, details={"id": 99999})
+
+
+async def test_put_self_title_case_variant_succeeds(client: AsyncClient, create_task: CreateTask) -> None:
+    """Replacing a row with a title_key equal to its own existing title_key must not 409."""
+    task_id = await create_task("solo")
+    r = await client.put(
+        f"/v1/tasks/{task_id}",
+        json={"title": "  SOLO  ", "description": "d", "status": "in_progress", "priority": 4},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["title"] == "SOLO"
+    # Follow-up GET confirms persistence.
+    fetched = await client.get(f"/v1/tasks/{task_id}")
+    assert fetched.json()["title"] == "SOLO"
+
+
+async def test_put_omitting_description_nulls_the_column(client: AsyncClient, create_task: CreateTask) -> None:
+    """PUT is replace, not merge — omitting ``description`` from the body clears the row."""
+    task_id = await create_task("with-desc")
+    seed = await client.patch(f"/v1/tasks/{task_id}", json={"description": "before"})
+    assert seed.json()["description"] == "before"
+
+    r = await client.put(
+        f"/v1/tasks/{task_id}",
+        json={"title": "with-desc", "status": "new", "priority": 3},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["description"] is None
+    fetched = await client.get(f"/v1/tasks/{task_id}")
+    assert fetched.json()["description"] is None
 
 
 async def test_put_title_collision_returns_409(client: AsyncClient, create_task: CreateTask) -> None:

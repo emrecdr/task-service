@@ -31,11 +31,16 @@ def repo(request: pytest.FixtureRequest) -> Iterator[TaskRepositoryInterface]:
 
 
 def test_add_then_get_round_trip(repo: TaskRepositoryInterface) -> None:
-    created = repo.add(title="alpha", description=None, status=Status.NEW, priority=3)
+    created = repo.add(title="  Alpha  ", description="d", status=Status.IN_PROGRESS, priority=3)
     assert created.id is not None
     fetched = repo.get(created.id)
     assert fetched.id == created.id
-    assert fetched.title == "alpha"
+    assert fetched.title == "Alpha"
+    assert fetched.title_key == "alpha"
+    assert fetched.description == "d"
+    assert fetched.status is Status.IN_PROGRESS
+    assert fetched.priority == 3
+    assert fetched.created_at is not None
 
 
 def test_get_missing_raises_task_not_found(repo: TaskRepositoryInterface) -> None:
@@ -44,10 +49,14 @@ def test_get_missing_raises_task_not_found(repo: TaskRepositoryInterface) -> Non
     assert exc.value.details == {"id": 9999}
 
 
-def test_duplicate_title_raises_duplicate_task(repo: TaskRepositoryInterface) -> None:
+def test_duplicate_title_raises_duplicate_task_with_verbatim_title(
+    repo: TaskRepositoryInterface,
+) -> None:
     repo.add(title="beta", description=None, status=Status.NEW, priority=1)
-    with pytest.raises(DuplicateTaskError):
+    with pytest.raises(DuplicateTaskError) as exc:
         repo.add(title=" BETA ", description=None, status=Status.NEW, priority=1)
+    # ``details.title`` echoes the caller's raw input, not the normalized form.
+    assert exc.value.details == {"title": " BETA "}
 
 
 def test_list_filters_by_status_and_sorts_desc(repo: TaskRepositoryInterface) -> None:
@@ -120,6 +129,60 @@ def test_patch_applies_partial_update(repo: TaskRepositoryInterface) -> None:
     assert previous.title == "x"
     assert patched.priority == 5
     assert patched.title == "x"
+
+
+def test_patch_title_renormalizes_title_key(repo: TaskRepositoryInterface) -> None:
+    created = repo.add(title="orig", description=None, status=Status.NEW, priority=2)
+    assert created.id is not None
+    previous, patched = repo.patch(created.id, title=" FRESH ")
+    assert previous.title == "orig"
+    assert previous.title_key == "orig"
+    assert patched.title == "FRESH"
+    assert patched.title_key == "fresh"
+
+
+def test_patch_multi_field_update_keeps_unspecified_fields(
+    repo: TaskRepositoryInterface,
+) -> None:
+    created = repo.add(title="x", description="keep", status=Status.NEW, priority=2)
+    assert created.id is not None
+    _previous, patched = repo.patch(
+        created.id,
+        title="renamed",
+        status=Status.IN_PROGRESS,
+        priority=4,
+    )
+    assert patched.title == "renamed"
+    assert patched.status is Status.IN_PROGRESS
+    assert patched.priority == 4
+    assert patched.description == "keep"
+
+
+def test_patch_title_to_existing_other_row_raises_duplicate(
+    repo: TaskRepositoryInterface,
+) -> None:
+    repo.add(title="first", description=None, status=Status.NEW, priority=1)
+    second = repo.add(title="second", description=None, status=Status.NEW, priority=1)
+    assert second.id is not None
+    with pytest.raises(DuplicateTaskError):
+        repo.patch(second.id, title=" FIRST ")
+
+
+def test_replace_self_title_succeeds(repo: TaskRepositoryInterface) -> None:
+    """PUT-replace with the same title_key on the same row must not 409 against itself."""
+    created = repo.add(title="solo", description="d1", status=Status.NEW, priority=1)
+    assert created.id is not None
+    _previous, replaced = repo.replace(
+        created.id,
+        title="SOLO",
+        description="d2",
+        status=Status.IN_PROGRESS,
+        priority=4,
+    )
+    assert replaced.title == "SOLO"
+    assert replaced.title_key == "solo"
+    assert replaced.description == "d2"
+    assert replaced.status is Status.IN_PROGRESS
 
 
 def test_delete_returns_snapshot_and_removes(repo: TaskRepositoryInterface) -> None:

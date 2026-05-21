@@ -45,8 +45,18 @@ async def test_create_rejects_server_owned_id(client: AsyncClient) -> None:
     assert_error(r, 422, ErrorCode.READ_ONLY_FIELD, details={"field": "id"})
 
 
-async def test_create_rejects_priority_out_of_range(client: AsyncClient) -> None:
+async def test_create_rejects_priority_above_max(client: AsyncClient) -> None:
     r = await client.post("/v1/tasks", json={"title": "x", "priority": 9})
+    assert_error(r, 422, ErrorCode.VALIDATION_ERROR)
+
+
+async def test_create_rejects_priority_below_min(client: AsyncClient) -> None:
+    r = await client.post("/v1/tasks", json={"title": "x", "priority": 0})
+    assert_error(r, 422, ErrorCode.VALIDATION_ERROR)
+
+
+async def test_create_rejects_priority_negative(client: AsyncClient) -> None:
+    r = await client.post("/v1/tasks", json={"title": "x", "priority": -1})
     assert_error(r, 422, ErrorCode.VALIDATION_ERROR)
 
 
