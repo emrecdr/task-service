@@ -5,6 +5,8 @@ because its generator mis-bounds integer path params and emits ``"null"``
 for nullable enums; happy-path coverage lives in ``tests/integration``.
 """
 
+from typing import Any
+
 import pytest
 import schemathesis
 from app.main import app
@@ -17,5 +19,5 @@ _EXCLUDED_CHECKS = [positive_data_acceptance]
 
 @pytest.mark.e2e
 @schema.parametrize()
-def test_no_5xx_and_schema_conformance(case: schemathesis.Case) -> None:
+def test_no_5xx_and_schema_conformance(case: schemathesis.Case[Any]) -> None:
     case.call_and_validate(excluded_checks=_EXCLUDED_CHECKS)
