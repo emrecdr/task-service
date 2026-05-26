@@ -14,7 +14,7 @@ DOCKER_COMPOSE := docker compose -f docker/docker-compose.yaml
 .DEFAULT_GOAL := help
 
 help: ## ✨ Show this help message
-	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-22s\033[0m %s\n", $$1, $$2}'
+	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-22s\033[0m %s\n", $$1, $$2}'
 
 all: lint typecheck test ## ✨ One-shot pre-push: static gates + full pytest suite
 

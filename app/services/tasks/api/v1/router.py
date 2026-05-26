@@ -2,7 +2,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, Path, status
 
-from app.core.constants import INT64_MAX
+from app.core.constants import INT64_MAX, INT64_MIN
 from app.core.openapi_responses import (
     CONFLICT_RESPONSE,
     NOT_FOUND_RESPONSE,
@@ -17,7 +17,7 @@ from app.services.tasks.application.dto import (
 from app.services.tasks.dependencies import TaskQueryParamsDep, TaskServiceDep
 from app.services.tasks.domain.models import Task
 
-TaskIdPath = Annotated[int, Path(le=INT64_MAX, json_schema_extra={"format": "int64"})]
+TaskIdPath = Annotated[int, Path(ge=INT64_MIN, le=INT64_MAX, json_schema_extra={"format": "int64"})]
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
