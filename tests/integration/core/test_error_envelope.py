@@ -1,4 +1,4 @@
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 import pytest
@@ -13,7 +13,7 @@ from tests.conftest import assert_error
 
 
 @asynccontextmanager
-async def _crash_client(error: Exception) -> AsyncIterator[AsyncClient]:
+async def _crash_client(error: Exception) -> AsyncGenerator[AsyncClient]:
     """Throwaway FastAPI app whose ``/boom`` route raises ``error``; yields a wired AsyncClient."""
     crash_app = FastAPI()
     crash_app.add_middleware(RequestIDMiddleware)
