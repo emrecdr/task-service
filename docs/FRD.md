@@ -219,7 +219,7 @@ Rules:
 | `LOG_LEVEL`          | log-level string            | derived from `APP_ENV`        | Explicit override.                                                |
 | `DATABASE_URL`       | str                         | `sqlite+pysqlite:///:memory:` | SQLModel engine URL.                                              |
 | `PROJECT_NAME`       | str                         | `Internal Task Service`       | OpenAPI title.                                                    |
-| `API_V1_PREFIX`      | str                         | `/v1`                         | Allows hosting under a different base path.                       |
+| `API_PREFIX`         | str                         | `/v1`                         | Allows hosting under a different base path.                       |
 | `DEFAULT_LIST_LIMIT` | int                         | `100`                         | Default pagination limit.                                         |
 | `MAX_LIST_LIMIT`     | int                         | `500`                         | Hard cap on pagination limit.                                     |
 

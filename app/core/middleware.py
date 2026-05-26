@@ -19,6 +19,7 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
         start = time.perf_counter()
         try:
             response: Response = await call_next(request)
+            response.headers["X-Request-ID"] = rid
             logger.info(
                 "http_request",
                 method=request.method,
@@ -26,7 +27,6 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
                 status=response.status_code,
                 duration_ms=round((time.perf_counter() - start) * 1000, 2),
             )
+            return response
         finally:
             structlog.contextvars.clear_contextvars()
-        response.headers["X-Request-ID"] = rid
-        return response

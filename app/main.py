@@ -43,7 +43,7 @@ def create_app() -> FastAPI:
     app.add_middleware(RequestIDMiddleware)
     register_exception_handlers(app)
     app.include_router(health_router)
-    app.include_router(tasks_router, prefix=settings.api_v1_prefix)
+    app.include_router(tasks_router, prefix=settings.api_prefix)
     return app
 
 

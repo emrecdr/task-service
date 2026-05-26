@@ -20,5 +20,7 @@ def init_schema() -> None:
 
 @contextmanager
 def session_factory() -> Generator[Session]:
-    with Session(engine) as session:
+    # expire_on_commit=False keeps attributes loaded after commit so Task.snapshot()
+    # (used for post-commit event payloads) can call model_dump() without re-fetch.
+    with Session(engine, expire_on_commit=False) as session:
         yield session

@@ -415,7 +415,7 @@ The `Settings` class exposes three derived properties driven by the `APP_ENV →
 
 **Pattern.** Factory Method + Lifespan-managed resources.
 
-The `create_app()` function is the single entrypoint: it builds the `FastAPI` instance, attaches the `RequestIDMiddleware`, registers exception handlers, mounts the health router and the tasks router (prefixed by `settings.api_v1_prefix`), and configures the custom OpenAPI operation-id function (`<tag>-<route_name>`, which keeps generated client SDKs readable).
+The `create_app()` function is the single entrypoint: it builds the `FastAPI` instance, attaches the `RequestIDMiddleware`, registers exception handlers, mounts the health router and the tasks router (prefixed by `settings.api_prefix`), and configures the custom OpenAPI operation-id function (`<tag>-<route_name>`, which keeps generated client SDKs readable).
 
 The `lifespan` async context manager owns startup and shutdown:
 

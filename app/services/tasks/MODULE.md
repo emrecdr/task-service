@@ -87,7 +87,7 @@ sets a server-managed field (`id`, `created_at`); the exception class
 
 ## Endpoints
 
-All under `settings.api_v1_prefix` (default `/v1`):
+All under `settings.api_prefix` (default `/v1`):
 
 | method | path             | response | events fired                         |
 | ------ | ---------------- | -------- | ------------------------------------ |

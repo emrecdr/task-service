@@ -32,7 +32,7 @@ class TaskService:
         background_tasks: BackgroundTasks,
     ) -> Task:
         task = self._repo.add(title=title, description=description, status=status, priority=priority)
-        self._events.publish(TaskCreated(task=task), background_tasks)
+        self._events.publish(TaskCreated(task=task.snapshot()), background_tasks)
         return task
 
     async def get(self, task_id: int) -> Task:
@@ -98,18 +98,20 @@ class TaskService:
         changed = [field for field in MUTABLE_FIELDS if getattr(updated, field) != getattr(previous, field)]
         if not changed:
             return
+        updated_snapshot = updated.snapshot()
         self._events.publish(
-            TaskUpdated(task=updated, previous=previous, changed_fields=changed),
+            TaskUpdated(task=updated_snapshot, previous=previous, changed_fields=changed),
             background_tasks,
         )
-        if "status" in changed:
-            self._events.publish(
-                TaskStatusChanged(
-                    task=updated,
-                    from_status=previous.status,
-                    to_status=updated.status,
-                ),
-                background_tasks,
-            )
-            if updated.status is Status.COMPLETED:
-                self._events.publish(TaskCompleted(task=updated), background_tasks)
+        if "status" not in changed:
+            return
+        self._events.publish(
+            TaskStatusChanged(
+                task=updated_snapshot,
+                from_status=previous.status,
+                to_status=updated.status,
+            ),
+            background_tasks,
+        )
+        if updated.status is Status.COMPLETED:
+            self._events.publish(TaskCompleted(task=updated_snapshot), background_tasks)
