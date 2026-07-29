@@ -14,6 +14,9 @@ from app.core.logging import logger, setup_logging
 from app.core.middleware import RequestIDMiddleware
 from app.services.tasks.api.v1.router import router as tasks_router
 from app.services.tasks.infrastructure.listeners import register_listeners as register_task_listeners
+from app.services.workflows.api.v1.router import router as workflow_router
+from app.services.workflows.infrastructure.listeners import register_listeners as register_workflow_listeners
+from app.services.workflows.infrastructure.seed import seed_workflow_if_missing
 
 
 def custom_unique_id(route: APIRoute) -> str:
@@ -25,8 +28,10 @@ def custom_unique_id(route: APIRoute) -> str:
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     setup_logging()
     init_schema()
+    seed_workflow_if_missing()
     bus = EventBus()
     register_task_listeners(bus)
+    register_workflow_listeners(bus)
     app.state.event_bus = bus
     logger.info("startup_complete", app_env=settings.app_env)
     yield
@@ -44,6 +49,7 @@ def create_app() -> FastAPI:
     register_exception_handlers(app)
     app.include_router(health_router)
     app.include_router(tasks_router, prefix=settings.api_prefix)
+    app.include_router(workflow_router, prefix=settings.api_prefix)
     return app
 
 

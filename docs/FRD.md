@@ -12,7 +12,7 @@ The service follows **simplified Hexagonal Architecture (feature-first)** — ea
 
 | Layer                                      | Responsibility                                                                                                       | Allowed dependencies                                                                     |
 | ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| **Domain** (`domain/`)                     | The `Task` SQLModel entity (storage + domain rules in one class), `Status` enum, domain events.                      | stdlib, `pydantic`, `sqlmodel`, shared base classes from `app/core/`. **Not** `fastapi`. |
+| **Domain** (`domain/`)                     | The `Task` SQLModel entity (storage + domain rules in one class), domain events. Task states are workflow data (§2.2). | stdlib, `pydantic`, `sqlmodel`, shared base classes from `app/core/`. **Not** `fastapi`. |
 | **Application** (`application/`)           | `TaskService` use-case orchestration; Pydantic DTOs (`TaskCreate`, `TaskPatch`, `TaskResponse`, `TaskListResponse`). | Domain + `interfaces.py`. **Not** `infrastructure/`, **not** `fastapi`.                  |
 | **Repository Interface** (`interfaces.py`) | ABC contracts for storage.                                                                                           | Domain only.                                                                             |
 | **Inbound Adapter** (`api/v1/`)            | FastAPI router and request handlers. Mounted by `app/main.py`.                                                       | Application + DI providers.                                                              |
@@ -30,24 +30,17 @@ The service follows **simplified Hexagonal Architecture (feature-first)** — ea
 | `id`          | `int`           | Primary key, auto-incrementing positive integer, server-assigned.                                               | Repository.               |
 | `title`       | `str`           | Non-empty after trim; max 200 chars; **unique** across all tasks under a case-insensitive + trimmed comparison. | Caller.                   |
 | `description` | `str \| None`   | Optional; max 2000 chars.                                                                                       | Caller.                   |
-| `status`      | `Status` (enum) | One of `new`, `in_progress`, `completed`. Default `new` on create.                                              | Caller (default applied). |
+| `status`      | `str`           | A state of the **active workflow definition** (§2.2). Defaults to the workflow's `default_entry` on create.     | Caller (default applied). |
 | `priority`    | `int`           | Inclusive range 1–5 (`Field(ge=1, le=5)`).                                                                      | Caller.                   |
 | `created_at`  | `datetime`      | UTC, timezone-aware, set by repository on insert. Immutable.                                                    | Repository.               |
 
-### 2.2 `Status` enum
+### 2.2 Workflow states (runtime data)
 
-```python
-class Status(str, Enum):
-    NEW = "new"
-    IN_PROGRESS = "in_progress"
-    COMPLETED = "completed"
-```
-
-Wire format is the snake-case string value (`"in_progress"`, not `"in progress"`). The literal in the PDF — "in progress" — is normalized for API stability.
+Task states are **not** a code-level enum: they are defined by the active workflow definition stored in the `workflow_definitions` table and managed via `GET/PUT /v1/workflow` (§3.1). The shipped seed defines `new`, `in_progress`, `completed` — behavior-identical to the earlier fixed set. Wire format is whatever snake-case state names the active definition declares; the PDF literal "in progress" remains normalized to `in_progress` in the seed for API stability. A state whose definition carries `"completes": true` marks task completion (§5.1).
 
 ### 2.3 Status transitions
 
-Phase 1 allows **any → any** transition. The service does **not** validate workflow order. Future phases may add this as a configurable policy.
+Transitions are **governed by the active workflow definition**: a status change is legal only if the definition names a transition for that `(from, to)` pair, and a create may only enter a state marked `initial`. Illegal moves are rejected with `409 invalid_transition` (§4). Same-state writes are no-moves and always succeed. The shipped default definition is behavior-identical to Phase 1's original any → any contract; installing a restrictive definition via `PUT /v1/workflow` changes what is legal at runtime, no deploy required.
 
 ### 2.4 Timezone policy (single source of truth: UTC)
 
@@ -91,6 +84,9 @@ All routes are mounted under `/v1`. All responses are JSON. All timestamps are R
 | `PUT`    | `/v1/tasks/{id}` | Replace a task in full.              | `200 OK` + `Task`             | 404, 409, 422 |
 | `PATCH`  | `/v1/tasks/{id}` | Update any subset of fields.         | `200 OK` + `Task`             | 404, 409, 422 |
 | `DELETE` | `/v1/tasks/{id}` | Delete a task.                       | `204 No Content`              | 404           |
+| `GET`    | `/v1/tasks/{id}/transitions` | Legal moves out of the task's state (UI buttons; definition `meta` passes through). | `200 OK` + `TaskTransitionsResponse` | 404 |
+| `GET`    | `/v1/workflow`   | The active workflow definition (`version`, `created_at`, canonical `definition`). | `200 OK` + `WorkflowResponse` | —             |
+| `PUT`    | `/v1/workflow`   | Replace the definition (append-only version; collect-all-errors validation; strand guard). | `200 OK` + `WorkflowResponse` | 409, 422      |
 | `GET`    | `/healthz`       | Liveness.                            | `200 OK` `{"status":"ok"}`    | —             |
 | `GET`    | `/readyz`        | Readiness (DB session reachable).    | `200 OK` or `503`             | —             |
 
@@ -102,7 +98,7 @@ All routes are mounted under `/v1`. All responses are JSON. All timestamps are R
 | ------------- | ------ | -------- | ----------------------- |
 | `title`       | string | yes      | 1–200 chars after trim. |
 | `description` | string | no       | ≤ 2000 chars.           |
-| `status`      | enum   | no       | Defaults to `new`.      |
+| `status`      | string | no       | Must be an entry state of the active workflow; omitted → its `default_entry`. Explicit `null` → 422. |
 | `priority`    | int    | yes      | 1–5.                    |
 
 **`TaskUpdate`** (PUT body): same shape as `TaskCreate` but **every** field is required (full replacement). `created_at` and `id` are server-owned and rejected if present.
@@ -128,7 +124,7 @@ All routes are mounted under `/v1`. All responses are JSON. All timestamps are R
 
 | Param    | Type                            | Default         | Notes                                                                                                       |
 | -------- | ------------------------------- | --------------- | ----------------------------------------------------------------------------------------------------------- |
-| `status`    | `Status` enum  | —          | Filters to that status only. Multiple values supported via `?status=new&status=in_progress`.                       |
+| `status`    | string         | —          | Filters to that status only. Multiple values supported via `?status=new&status=in_progress`. Unknown values match nothing (`200`, empty list) — filters are not validated against the workflow. |
 | `order_by`  | `priority`     | `priority` | Sort column. Only `priority` is sortable in Phase 1; equal priorities are sub-sorted by `created_at` ascending. |
 | `order_dir` | `asc \| desc`  | `desc`     | Sort direction.                                                                                                    |
 | `limit`     | int            | `100`      | 1–500. Values outside this range → 422.                                                                            |
@@ -159,7 +155,11 @@ Malformed JSON request bodies (which FastAPI would otherwise surface as a raw `4
 | ------------------------------------------------------------------- | ---------------------------- | --------------------------- | ------------------ |
 | Title already exists (create or rename)                             | `DuplicateTaskError`         | `409 Conflict`              | `duplicate_task`   |
 | Task ID not found                                                   | `TaskNotFoundError`          | `404 Not Found`             | `task_not_found`   |
-| Empty/over-length title, priority out of range, unknown status      | (Pydantic `ValidationError`) | `422 Unprocessable Entity`  | `validation_error` |
+| Empty/over-length title, priority out of range, malformed body      | (Pydantic `ValidationError`) | `422 Unprocessable Entity`  | `validation_error` |
+| Status in a request **body** that is no state of the active workflow | (core `ValidationError`, service-raised) | `422 Unprocessable Entity`  | `validation_error` |
+| Status change the active workflow does not allow (or create into a non-entry state) | `InvalidTransitionError`     | `409 Conflict`              | `invalid_transition` |
+| `PUT /v1/workflow` body that fails definition validation (all problems listed at once) — including server-owned `version`/`created_at` keys, rejected as unknown top-level keys (deliberately **not** `read_only_field`: the body is a definition document, not the resource) | `WorkflowValidationError`    | `422 Unprocessable Entity`  | `invalid_workflow_definition` |
+| `PUT /v1/workflow` that would strand tasks in undefined states      | `WorkflowStatesInUseError`   | `409 Conflict`              | `workflow_states_in_use` |
 | PATCH body with no fields                                           | `EmptyUpdateError`           | `422 Unprocessable Entity`  | `empty_update`     |
 | Attempt to set server-owned field on PUT/PATCH (`id`, `created_at`) | `ReadOnlyFieldError`         | `422 Unprocessable Entity`  | `read_only_field`  |
 | Anything else (truly unexpected)                                    | `Exception`                  | `500 Internal Server Error` | `internal_error`   |
@@ -174,17 +174,21 @@ The service must ship an in-process **Event Bus** (publish/subscribe). Domain ev
 
 | Event               | Fired when                                                                               | Payload                                                                     |
 | ------------------- | ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| `TaskCreated`       | After successful `POST /v1/tasks`.                                                       | `task: TaskResponse`                                                        |
-| `TaskUpdated`       | After any successful PUT or PATCH that mutated ≥1 field.                                 | `task: TaskResponse`, `changed_fields: list[str]`, `previous: TaskResponse` |
-| `TaskStatusChanged` | When the `status` field is among the changed fields. Fires in addition to `TaskUpdated`. | `task: TaskResponse`, `from_status: Status`, `to_status: Status`            |
-| `TaskCompleted`     | When `status` transitions to `completed`. Fires in addition to `TaskStatusChanged`.      | `task: TaskResponse`                                                        |
-| `TaskDeleted`       | After successful DELETE.                                                                 | `task: TaskResponse` (the deleted snapshot)                                 |
+| `TaskCreated`       | After successful `POST /v1/tasks`.                                                       | `task: Task`                                                                |
+| `TaskUpdated`       | After any successful PUT or PATCH that mutated ≥1 field.                                 | `task: Task`, `changed_fields: list[str]`, `previous: Task`                 |
+| `TaskStatusChanged` | When the `status` field is among the changed fields. Fires in addition to `TaskUpdated`. | `task: Task`, `from_status: str`, `to_status: str`                          |
+| `TaskCompleted`     | When a status change **enters a state whose definition carries `"completes": true`** (the seed marks `completed`). Fires in addition to `TaskStatusChanged`. | `task: Task`                                                                |
+| `TaskDeleted`       | After successful DELETE.                                                                 | `task: Task` (the deleted snapshot)                                         |
+
+Payloads carry detached domain `Task` snapshots (`Task.snapshot()`), never API DTOs — domain events cannot depend on the application layer.
 
 `TaskCompleted` is a convenience event so listeners do not need to filter `TaskStatusChanged` payloads when they only care about completion.
 
-### 5.2 Built-in listener (Phase 1)
+The workflows feature adds a sixth event: `WorkflowUpdated` (`version: int`, `states: list[str]`), published after every successful `PUT /v1/workflow` — definition changes are the highest-impact admin action and always reach the logs.
 
-One listener ships in Phase 1: the `log_event` subscriber in `app/services/tasks/infrastructure/listeners.py`. It subscribes to all five events and writes a single structured log line per event, including `request_id`, `event_type`, and the payload's `task.id`.
+### 5.2 Built-in listeners (Phase 1)
+
+Two log listeners ship in Phase 1: the `log_event` subscriber in `app/services/tasks/infrastructure/listeners.py` (all five task events) and its counterpart in `app/services/workflows/infrastructure/listeners.py` (`WorkflowUpdated`). Each writes a single structured log line per event, including `request_id`, `event_type`, and the payload's key identifier (`task.id` / `version`).
 
 ### 5.3 Adding listeners in the future
 
@@ -260,12 +264,12 @@ The project uses a **hybrid test layout**: unit tests live alongside the feature
 
 | Category           | Where                       | Tooling                                                | What is covered                                                                                                                                                                                                                                                                                                                                                                |
 | ------------------ | --------------------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Unit**           | `app/services/tasks/tests/` | `pytest`                                               | Domain rules on `Task` (title normalization, `title_key` collisions, priority bounds, factory validation). Service-layer orchestration with a fake `TaskRepositoryInterface` and a fake `EventBus`: events fire on correct paths; `TaskCompleted` only fires when status transitions to `completed`; PATCH with no changes does not fire `TaskUpdated`. No FastAPI, no DB I/O. |
+| **Unit**           | `app/services/tasks/tests/` | `pytest`                                               | Domain rules on `Task` (title normalization, `title_key` collisions, priority bounds, factory validation). Service-layer orchestration with a fake `TaskRepositoryInterface` and a fake `EventBus`: events fire on correct paths; `TaskCompleted` only fires when the entered state carries `"completes": true`; PATCH with no changes does not fire `TaskUpdated`. No FastAPI, no DB I/O. |
 | **Integration**    | `tests/integration/`        | `pytest` + `httpx.AsyncClient` against the FastAPI app | All endpoints, all error codes, query-param validation, pagination, error-envelope shape, `X-Request-ID` round-trip. In-process; uses SQLite `:memory:`.                                                                                                                                                                                                                       |
 | **Contract**       | `tests/contract/`           | `pytest` parametrized over every concrete repository   | Conformance of any `TaskRepositoryInterface` implementation. Adding a new adapter (e.g., Postgres in Phase 2) requires zero new test code.                                                                                                                                                                                                                                     |
 | **E2E (Hurl)**     | `tests/hurl/`               | `hurl` CLI against the running Docker container        | Black-box scenarios over real HTTP. One scenario per file with plain descriptive names (e.g., `task_create.hurl`, `task_lifecycle.hurl`, `healthz.hurl`).                                                                                                                                                                                                                      |
 | **E2E (property)** | `tests/e2e/`                | `Schemathesis` driven by the OpenAPI schema            | Property-based testing that asserts no 5xx and schema-conformant responses. Optional in Phase 1, mandatory in Phase 2.                                                                                                                                                                                                                                                         |
-| **Static**         | `ruff`, `mypy`, `bandit`    | Lint, type-check, security-lint.                       | Run via `pre-commit` locally and in CI.                                                                                                                                                                                                                                                                                                                                        |
+| **Static**         | `ruff`, `pyright`, `bandit` | Lint, type-check, security-lint.                       | Run via `pre-commit` locally and in CI.                                                                                                                                                                                                                                                                                                                                        |
 
 ### 9.2 Test split rule
 
@@ -292,12 +296,12 @@ Coverage target: **≥ 80%** on the `app/` package (excluding `app/main.py` boot
 | Tool                                   | Purpose                                                                                                                                                                                                                                  | Gate                                                   |
 | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
 | `ruff`                                 | Linter + formatter. Run as `ruff check` and `ruff format --check`.                                                                                                                                                                       | `pre-commit` (fast hooks) **and** CI.                  |
-| `mypy`                                 | Static type checking (`--strict` on the domain layer, default elsewhere).                                                                                                                                                                | CI.                                                    |
+| `pyright`                              | Static type checking (strict mode on `app/` and `tests/`).                                                                                                                                                                                | CI.                                                    |
 | `bandit`                               | Security linter for common Python pitfalls (`assert` in prod paths, weak crypto, hardcoded passwords). Configured via `[tool.bandit]` in `pyproject.toml`; severity ≥ `medium` fails CI.                                                 | CI.                                                    |
 | `pre-commit`                           | Local pre-commit hooks runner. Pinned via `.pre-commit-config.yaml`; runs `ruff`, `ruff format`, `bandit`, end-of-file/whitespace fixers, and `uv lock --check` to keep `uv.lock` in sync. Onboarding step: `uv run pre-commit install`. | Developer machines (locally) **and** CI as a backstop. |
 | `schemathesis` _(optional in Phase 1)_ | OpenAPI-driven property-based E2E tests. Promoted to a required gate in Phase 2.                                                                                                                                                         | CI (optional).                                         |
 
-The four mandatory dev-tool gates (`ruff`, `mypy`, `bandit`, `pre-commit`) are wired into both local hooks and CI to ensure no commit reaches `main` without passing them. `import-linter` is **deliberately not used** in Phase 1 — boundaries are enforced by code review. Reintroducing it is a Phase 2 option if the team grows beyond one squad.
+The four mandatory dev-tool gates (`ruff`, `pyright`, `bandit`, `pre-commit`) are wired into both local hooks and CI to ensure no commit reaches `main` without passing them. `import-linter` is **deliberately not used** in Phase 1 — boundaries are enforced by code review. Reintroducing it is a Phase 2 option if the team grows beyond one squad.
 
 ## 11. Acceptance Criteria
 
@@ -308,7 +312,7 @@ The Phase 1 release ships when all of the following hold:
 3. Every event in Section 5.1 has at least one passing service-layer **unit test** under `app/services/tasks/tests/` asserting it fires under the right conditions and **does not** fire under the wrong ones.
 4. `tests/contract/test_task_repository_interface.py` passes against every concrete `TaskRepositoryInterface` implementation.
 5. `tests/hurl/*.hurl` scenarios — at minimum `healthz`, `task_create`, `task_create_duplicate_title`, `task_lifecycle`, `task_list_filter_sort`, `task_not_found` — pass against the running container.
-6. `ruff check`, `ruff format --check`, `bandit`, `mypy`, and `pytest --cov=app --cov-fail-under=80` all pass in CI.
+6. `ruff check`, `ruff format --check`, `bandit`, `pyright`, and `pytest --cov=app --cov-fail-under=80` all pass in CI.
 7. The Docker image builds and `docker run` of the published tag binds to port 8000 and responds 200 on `/healthz`.
 8. README explains run, test, and configuration (including the `APP_ENV` matrix).
 

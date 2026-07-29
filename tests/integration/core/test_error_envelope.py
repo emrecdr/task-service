@@ -20,7 +20,7 @@ async def _crash_client(error: Exception) -> AsyncGenerator[AsyncClient]:
     register_exception_handlers(crash_app)
 
     @crash_app.get("/boom")
-    async def _boom() -> None:
+    async def _boom() -> None:  # pyright: ignore[reportUnusedFunction]
         raise error
 
     transport = ASGITransport(app=crash_app, raise_app_exceptions=False)
@@ -39,6 +39,31 @@ async def test_internal_error_envelope_shape() -> None:
         r = await c.get("/boom")
     err = assert_error(r, 500, ErrorCode.INTERNAL_ERROR)
     assert "message" in err
+
+
+async def test_unexpected_exception_returns_internal_error_envelope() -> None:
+    """FRD §4: exceptions outside the AppError hierarchy must still produce the envelope."""
+    async with _crash_client(ValueError("boom")) as c:
+        r = await c.get("/boom")
+    err = assert_error(r, 500, ErrorCode.INTERNAL_ERROR)
+    assert "message" in err
+
+
+async def test_unexpected_exception_echoes_request_id() -> None:
+    async with _crash_client(ValueError("boom")) as c:
+        r = await c.get("/boom", headers={"X-Request-ID": "rid-crash-path"})
+    assert r.headers.get("X-Request-ID") == "rid-crash-path"
+    assert r.json()["error"]["request_id"] == "rid-crash-path"
+
+
+async def test_unexpected_exception_dev_envelope_surfaces_cause(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "app_env", Environment.DEV)
+    async with _crash_client(ValueError("inner explosion")) as c:
+        r = await c.get("/boom")
+    err = assert_error(r, 500, ErrorCode.INTERNAL_ERROR)
+    assert err["details"].get("cause") == "ValueError: inner explosion"
 
 
 async def test_validation_error_envelope_shape(client: AsyncClient) -> None:

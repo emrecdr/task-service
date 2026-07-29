@@ -12,6 +12,7 @@ import pytest
 from app.core.database import engine, init_schema
 from app.core.errors import ErrorCode
 from app.main import app
+from app.services.workflows.infrastructure.seed import seed_workflow_if_missing
 from httpx import ASGITransport, AsyncClient, Response
 from sqlmodel import SQLModel
 
@@ -19,10 +20,15 @@ type CreateTask = Callable[..., Awaitable[int]]
 
 
 @pytest.fixture(autouse=True)
-def _fresh_schema() -> None:
-    """Recreate the in-memory schema between tests so they are isolated."""
+def _fresh_schema() -> None:  # pyright: ignore[reportUnusedFunction]
+    """Recreate the in-memory schema between tests so they are isolated.
+
+    Seeds the workflow row here as well as in the app lifespan so repo and
+    contract tests that never run lifespan still see the startup invariant.
+    """
     SQLModel.metadata.drop_all(engine)
     init_schema()
+    seed_workflow_if_missing()
 
 
 @pytest.fixture

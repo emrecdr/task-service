@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse, Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.core.config import settings
+from app.core.logging import logger
 
 
 class ErrorCode(StrEnum):
@@ -18,6 +19,9 @@ class ErrorCode(StrEnum):
     READ_ONLY_FIELD = "read_only_field"
     DUPLICATE_TASK = "duplicate_task"
     TASK_NOT_FOUND = "task_not_found"
+    INVALID_TRANSITION = "invalid_transition"
+    INVALID_WORKFLOW_DEFINITION = "invalid_workflow_definition"
+    WORKFLOW_STATES_IN_USE = "workflow_states_in_use"
     INTERNAL_ERROR = "internal_error"
 
 
@@ -97,11 +101,11 @@ def _envelope_from_app_error(request: Request, exc: AppError) -> JSONResponse:
 
 def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(AppError)
-    async def _app_error_handler(request: Request, exc: AppError) -> JSONResponse:
+    async def _app_error_handler(request: Request, exc: AppError) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
         return _envelope_from_app_error(request, exc)
 
     @app.exception_handler(StarletteHTTPException)
-    async def _http_exception_handler(request: Request, exc: StarletteHTTPException) -> Response:
+    async def _http_exception_handler(request: Request, exc: StarletteHTTPException) -> Response:  # pyright: ignore[reportUnusedFunction]
         # Re-wrap Starlette's 400 (malformed body) as a 422 validation_error envelope;
         # delegate all other HTTPExceptions so framework headers (e.g. 405 Allow) survive.
         if exc.status_code == status.HTTP_400_BAD_REQUEST:
@@ -115,7 +119,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         return await default_http_exception_handler(request, exc)
 
     @app.exception_handler(RequestValidationError)
-    async def _request_validation_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    async def _request_validation_handler(request: Request, exc: RequestValidationError) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
         # Strip ``ctx`` — it holds the non-JSON-serialisable source exception.
         errors = [{key: value for key, value in err.items() if key != "ctx"} for err in exc.errors()]
 
@@ -133,3 +137,15 @@ def register_exception_handlers(app: FastAPI) -> None:
             details={"errors": errors},
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         )
+
+    @app.exception_handler(Exception)
+    async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
+        # Starlette's ServerErrorMiddleware sends this response from outside
+        # RequestIDMiddleware's success path, so the header echo and the log line
+        # must happen here or the request vanishes from logs entirely.
+        logger.error("unhandled_exception", exc_info=exc)
+        response = _envelope_from_app_error(request, AppError(original_error=exc))
+        request_id = getattr(request.state, "request_id", None)
+        if request_id is not None:
+            response.headers["X-Request-ID"] = request_id
+        return response

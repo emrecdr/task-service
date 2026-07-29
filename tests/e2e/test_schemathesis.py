@@ -1,3 +1,4 @@
+# pyright: reportUnknownVariableType=false, reportUnknownMemberType=false, reportUntypedFunctionDecorator=false, reportArgumentType=false
 """Property-based OpenAPI tests via Schemathesis (ASGI in-process).
 
 Run with ``make schemathesis``. ``positive_data_acceptance`` is excluded

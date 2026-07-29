@@ -20,6 +20,9 @@ All endpoints are mounted under `/v1`. Open the interactive docs at <http://loca
 | `PUT`    | `/v1/tasks/{id}` | Replace all mutable fields      | `200 OK`          | 404, 409, 422                                                    |
 | `PATCH`  | `/v1/tasks/{id}` | Update any subset of fields     | `200 OK`          | 404, 409, 422 (incl. `empty_update`)                             |
 | `DELETE` | `/v1/tasks/{id}` | Delete a task                   | `204 No Content`  | 404                                                              |
+| `GET`    | `/v1/tasks/{id}/transitions` | Legal moves out of the task's state (UI buttons) | `200 OK` | 404 `task_not_found`                             |
+| `GET`    | `/v1/workflow`   | The active workflow definition  | `200 OK`          | —                                                                |
+| `PUT`    | `/v1/workflow`   | Replace the workflow definition | `200 OK`          | 409 `workflow_states_in_use`, 422 `invalid_workflow_definition`  |
 | `GET`    | `/healthz`       | Liveness — synchronous, no I/O  | `200 OK`          | —                                                                |
 | `GET`    | `/readyz`        | Readiness — DB round-trip       | `200 OK` or `503` | —                                                                |
 
@@ -47,6 +50,14 @@ curl -X POST http://localhost:8000/v1/tasks \
   -H 'Content-Type: application/json' \
   -d '{"title": "Ship Task Service", "priority": 1}'
 # → 409 {"error":{"code":"duplicate_task","message":"...","details":{"title":"Ship Task Service"},"request_id":"..."}}
+
+# The state machine itself is runtime data — inspect or replace it
+curl http://localhost:8000/v1/workflow
+# → 200 {"version":1,"created_at":"...","definition":{"states":[...],"transitions":[...]}}
+
+# Which moves are legal for task 1 right now (what a UI renders as buttons)
+curl http://localhost:8000/v1/tasks/1/transitions
+# → 200 {"task_id":1,"status":"in_progress","transitions":[{"name":"Complete","to":"completed","meta":{}}, ...]}
 ```
 
 ## Approach
@@ -57,7 +68,9 @@ The service is built around four design choices, each tied to an objective from 
 
 **Single domain+ORM entity.** The `Task` SQLModel row _is_ the domain entity (`table=True`). Phase 1 does not split domain and ORM into two classes; the duplication wasn't paying for itself at this scale. If/when a richer domain model arrives (state machines, invariants the ORM can't express), the split happens then.
 
-**Five-event domain bus.** The application service publishes `TaskCreated`, `TaskUpdated`, `TaskStatusChanged`, `TaskCompleted`, `TaskDeleted` after each mutation via `EventBus.publish(event, background_tasks)`. Listeners run through FastAPI `BackgroundTasks` so they execute _post-commit, pre-response_ without blocking the HTTP call. Phase 1 ships one listener (structured-log subscriber); the bus is the seam where notifications / outbox / Kafka would land in Phase 2.
+**Domain event bus.** The application service publishes `TaskCreated`, `TaskUpdated`, `TaskStatusChanged`, `TaskCompleted`, `TaskDeleted` (and the workflows feature `WorkflowUpdated`) after each mutation via `EventBus.publish(event, background_tasks)`. Listeners run through FastAPI `BackgroundTasks` so they execute _post-commit, pre-response_ without blocking the HTTP call. Phase 1 ships one listener (structured-log subscriber); the bus is the seam where notifications / outbox / Kafka would land in Phase 2.
+
+**Workflow as a service.** Task states and transitions are **runtime data**, not code: the active definition (states, entry points, named transitions, open `meta` fields) lives in a versioned DB row managed via `GET/PUT /v1/workflow`, and the tasks service enforces it on every status change — illegal moves 409 with the allowed list, definitions that would strand existing tasks are rejected. The shipped seed is behavior-identical to the original fixed three-state contract, so the default experience is unchanged until someone reshapes the workflow.
 
 **Swappable repository.** `TaskRepositoryInterface` is an ABC, not a `Protocol` — any implementation that forgets a method fails at _instantiation_ time with a clear `TypeError`. Contract tests (`tests/contract/`) are parametrised over every concrete repository, so adding a Postgres adapter in Phase 2 requires zero new test code.
 
@@ -65,7 +78,7 @@ The service is built around four design choices, each tied to an objective from 
 
 - **`title_key = title.strip().casefold()`** is the canonical uniqueness column; original `title` is preserved verbatim for display. Duplicate detection goes through `title_key`, never `title`. This is what makes "Fix bug" and " fix BUG" the same task.
 - **Single global error handler** converts every `AppError` subclass and every Pydantic `RequestValidationError` into the same envelope. Domain code never builds HTTP responses — `raise DuplicateTaskError(details={"title": …})` is enough. In `dev` mode only, raisers may pass `original_error=` and the envelope's `details.cause` will surface the underlying exception (gated by `settings.expose_stack_traces`); other envs strip it.
-- **All timestamps UTC, always.** `datetime.now(UTC)` everywhere; the Docker image sets `TZ=UTC`. Naïve datetimes are a bug, surfaced by mypy and the `ensure_utc` boundary helper.
+- **All timestamps UTC, always.** `datetime.now(UTC)` everywhere; the Docker image sets `TZ=UTC`. Naïve datetimes are a bug, surfaced by pyright and the `ensure_utc` boundary helper.
 - **Request-ID middleware** generates a UUIDv4 when `X-Request-ID` is absent, binds it to the structlog context, and echoes it on the response. Every log line in a request carries the same id.
 
 ## Project layout
@@ -95,20 +108,25 @@ app/
         ├── infrastructure/        # SQLModelTaskRepository + event listeners
         ├── api/v1/                # FastAPI router (mounted under /v1/tasks)
         ├── interfaces.py          # TaskRepositoryInterface ABC
-        ├── constants.py           # Status / TaskSortField StrEnums + field bounds
+        ├── constants.py           # TaskSortField StrEnum, field bounds, COMPLETES_META_KEY
         ├── dependencies.py        # Feature DI providers (repository, service, query params)
         ├── errors.py              # DuplicateTaskError, TaskNotFoundError, EmptyUpdateError
         ├── MODULE.md              # Feature-internal doc: invariants, error-table, conventions
         └── tests/                 # Feature-local unit tests (no FastAPI, no DB)
+    └── workflows/                 # Workflow definitions as runtime data (GET/PUT /v1/workflow)
+        ├── serialization.py       # Document boundary — collect-all-errors validation
+        ├── domain/                # State/Transition value objects + Workflow definition
+        ├── infrastructure/        # Versioned JSON storage + behavior-identical seed
+        └── MODULE.md              # Feature-internal doc
 tests/
 ├── conftest.py                    # Test fixtures (in-process app, lifespan, fresh DB)
 ├── integration/                   # httpx.AsyncClient against in-process FastAPI app
 ├── contract/                      # Parametrised over every TaskRepositoryInterface impl
 ├── e2e/                           # Schemathesis property tests (pytest marker: ``e2e``)
-└── hurl/                          # 12 black-box scenarios against the running container
+└── hurl/                          # 14 black-box scenarios against the running container
 docker/                            # Multi-stage Dockerfile + docker-compose.yaml
 docs/                              # PRD (product), FRD (functional), TIS (technical)
-.github/workflows/                 # CI: pre-commit → mypy → pytest → Hurl
+.github/workflows/                 # CI: pre-commit → pyright → pytest → Hurl
 reports/hurl/                      # Generated HTML + JSON reports (gitignored except .gitkeep)
 ```
 
@@ -117,7 +135,7 @@ reports/hurl/                      # Generated HTML + JSON reports (gitignored e
 Enforced by review (not tooling) — see `docs/TIS.md` §1 for the full contract (and §3.1 for the layer-responsibility table):
 
 1. `domain/**` may import stdlib, `pydantic`, `sqlmodel`, `app/core/*`. **No `fastapi`.**
-2. `application/**` may import `domain/` and `interfaces.py`. **No `infrastructure/`, no `fastapi`.**
+2. `application/**` may import `domain/`, `interfaces.py`, and a sibling feature's `interfaces.py`/`domain/` types. **No `infrastructure/`, no `fastapi`.**
 3. `infrastructure/**` may import everything in the feature plus DB helpers from `app/core/`.
 4. `api/**` is the only feature-internal place that touches `fastapi`.
 5. `app/core/**` must not import from any individual service.
@@ -307,7 +325,7 @@ APP_ENV=qa LOG_LEVEL=DEBUG uv run uvicorn app.main:app
 ```bash
 uv run uvicorn app.main:app --reload   # dev server
 uv run pytest -k some_test              # single test
-uv run ruff check . && uv run mypy      # lint + typecheck
+uv run ruff check . && uv run pyright   # lint + typecheck
 ```
 
 Pre-commit hooks wire automatically on `make install` (ruff, ruff-format, bandit, file hygiene, `uv lock --check`).

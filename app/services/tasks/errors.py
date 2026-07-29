@@ -6,6 +6,11 @@ class DuplicateTaskError(ConflictError):
     detail = "A task with this title already exists."
 
 
+class InvalidTransitionError(ConflictError):
+    error_code = ErrorCode.INVALID_TRANSITION
+    detail = "The active workflow does not allow this move."
+
+
 class TaskNotFoundError(NotFoundError):
     error_code = ErrorCode.TASK_NOT_FOUND
     detail = "Task not found."

@@ -67,3 +67,11 @@ async def test_create_malformed_json_body_returns_422_envelope(client: AsyncClie
         headers={"Content-Type": "application/json"},
     )
     assert_error(r, 422, ErrorCode.VALIDATION_ERROR)
+
+
+async def test_create_with_explicit_entry_status_persists_it(client: AsyncClient) -> None:
+    r = await client.post("/v1/tasks", json={"title": "x", "priority": 2, "status": "in_progress"})
+    assert r.status_code == 201, r.text
+    assert r.json()["status"] == "in_progress"
+    fetched = await client.get(f"/v1/tasks/{r.json()['id']}")
+    assert fetched.json()["status"] == "in_progress"

@@ -39,7 +39,7 @@ The service follows **simplified Hexagonal Architecture (feature-first)** — ea
        │      infrastructure/     │    │       domain/        │
        │  SQLModelTaskRepository  │    │ Task (SQLModel +     │
        │  + listeners.py          │    │ table=True)          │
-       │                          │    │ Status enum, events  │
+       │                          │    │ status str, events   │
        └──────────────────────────┘    └──────────────────────┘
 ```
 
@@ -72,7 +72,7 @@ task-service/
 │       └── tasks/
 │           ├── __init__.py
 │           ├── dependencies.py       # Feature DI providers (repo, service)
-│           ├── constants.py          # Status enum, TaskSortField, field bounds
+│           ├── constants.py          # TaskSortField, field bounds
 │           ├── errors.py             # DuplicateTaskError, TaskNotFoundError, …
 │           ├── interfaces.py         # TaskRepositoryInterface (ABC) at feature root
 │           ├── api/
@@ -96,6 +96,25 @@ task-service/
 │               ├── __init__.py
 │               ├── test_task_model.py
 │               └── test_task_service.py
+│       └── workflows/                # Workflow-definition feature (states/transitions as data)
+│           ├── __init__.py
+│           ├── dependencies.py       # Feature DI providers (repo + tasks repo → service)
+│           ├── errors.py             # WorkflowValidationError, WorkflowStatesInUseError
+│           ├── interfaces.py         # WorkflowRepositoryInterface (ABC) + StoredWorkflow
+│           ├── serialization.py      # workflow_to_document / workflow_from_document (collect-all-errors)
+│           ├── api/v1/router.py      # GET/PUT /v1/workflow
+│           ├── application/
+│           │   ├── service.py        # WorkflowService (validate → strand guard → append version)
+│           │   └── dto.py            # WorkflowResponse
+│           ├── domain/
+│           │   ├── models.py         # State, Transition value objects (open meta model)
+│           │   ├── definition.py     # Workflow: states + transition table + reachability
+│           │   └── events.py         # WorkflowUpdated
+│           ├── infrastructure/
+│           │   ├── repository.py     # WorkflowRecord (JSON column) + SQLModelWorkflowRepository
+│           │   ├── seed.py           # default_workflow() + seed_workflow_if_missing()
+│           │   └── listeners.py      # log_event listener
+│           └── tests/                # test_models, test_definition, test_serialization, test_service
 ├── tests/                            # Cross-boundary tests at the project root
 │   ├── conftest.py
 │   ├── integration/                  # In-process FastAPI app + repo
@@ -110,9 +129,14 @@ task-service/
 │   │           ├── test_put_task.py
 │   │           ├── test_patch_task.py
 │   │           ├── test_delete_task.py
+│   │           ├── test_task_transitions.py
+│   │           ├── test_workflow_enforcement.py
 │   │           └── test_repository_sqlmodel.py
+│   │       └── workflows/
+│   │           └── test_workflow_endpoints.py
 │   ├── contract/                     # Port-conformance tests (parametrized over impls)
-│   │   └── test_task_repository_interface.py
+│   │   ├── test_task_repository_interface.py
+│   │   └── test_workflow_repository_interface.py
 │   ├── hurl/                         # E2E scenarios in Hurl format
 │   │   ├── healthz.hurl
 │   │   ├── readyz.hurl
@@ -124,7 +148,8 @@ task-service/
 │   │   ├── task_list_filter_sort.hurl
 │   │   ├── task_put_full_replace.hurl
 │   │   ├── task_patch_partial.hurl
-│   │   └── task_not_found.hurl
+│   │   ├── task_not_found.hurl
+│   │   └── zzz_workflow_admin.hurl   # workflow admin + enforcement (runs last)
 │   └── e2e/                          # OpenAPI-driven property tests + future container E2E
 │       ├── .gitkeep
 │       └── test_schemathesis.py      # optional in Phase 1
@@ -137,7 +162,6 @@ task-service/
 ├── pyproject.toml                    # uv-managed
 ├── uv.lock
 ├── ruff.toml
-├── mypy.ini
 ├── Makefile                          # `make hurl-e2e`, `make test`, `make lint`
 ├── .env.example                      # checked-in reference template
 ├── .env.dev                          # local development (gitignored)
@@ -172,7 +196,7 @@ The implementation rests on a small set of explicitly chosen patterns. Each one 
 | **Dependency Injection** (Annotated style)                            | FastAPI `Annotated[X, Depends(...)]` aliases in `core/dependencies.py` and each feature's `dependencies.py` | Wiring is declared at the type level; swapping a collaborator means swapping one alias                                               |
 | **DTO at the API boundary**                                           | `application/dto.py` (Pydantic V2 models with `extra="forbid"`)                                             | Read-only fields rejected by the framework, not by hand-rolled validators                                                            |
 | **Reusable Annotated types**                                          | `NonBlankTitle = Annotated[str, Field(...), AfterValidator(...)]`                                           | Title bounds and the blank-rejection rule travel together; both DTOs reuse them by reference                                         |
-| **StrEnum for closed string sets**                                    | `Status`, `TaskSortField`, `OrderDirection`, `Environment`, `ErrorCode`                                     | Wire format = symbol value; no `if status_str == "completed"` magic strings anywhere                                                 |
+| **StrEnum for closed string sets**                                    | `TaskSortField`, `OrderDirection`, `Environment`, `ErrorCode`                                               | Wire format = symbol value. Task *states* are deliberately NOT an enum — they are runtime data owned by the active workflow definition |
 | **Single Source of Truth for bounds**                                 | `app/services/tasks/constants.py` (`Final[int]` scalars + StrEnums)                                         | DTO validation and SQLModel column constraints share one definition; can't drift                                                     |
 | **Middleware for request-scoped context**                             | `core/middleware.py::RequestIDMiddleware`                                                                   | UUIDv4 per request, bound to structlog context vars, echoed on the response — all in one place                                       |
 | **Lifespan-managed app factory**                                      | `app.main::lifespan` + `create_app()`                                                                       | Startup wires logging, schema, event bus, listeners; ASGI test clients can reuse the same factory                                    |
@@ -217,11 +241,11 @@ The dependency rule is enforced by review (not import-linter). The single featur
 
 > **🔒 Internal contract.** Any code path that needs a frozen pre/post-mutation `Task` value (events, audit) MUST call `Task.snapshot()`. Direct `model_validate(model_dump())` calls are forbidden — they bypass the centralisation guarantee.
 
-### 4.2 `Status` enum and sort fields
+### 4.2 Task states and sort fields
 
-> **Implements:** FRD §2.2 (`Status` wire format), §2.3 (status transitions: any→any in Phase 1), §3.3 (`?order_by` allowed values).
+> **Implements:** FRD §2.2 (workflow states as runtime data), §2.3 (definition-governed transitions), §3.3 (`?order_by` allowed values).
 
-`Status` is a `StrEnum` with values `new`, `in_progress`, `completed` — the value _is_ the wire format, so no separate serialisation is required. `TaskSortField` is the same idea for `?order_by=`: a closed set of allowed column names. Both eliminate any string-comparison branching elsewhere in the code.
+`Task.status` is a plain `str` validated at the service layer against the **active workflow definition** (`app/services/workflows/`); the shipped seed defines `new`, `in_progress`, `completed`. The deliberate trade-off of data-owned states: pyright cannot catch a typo'd state, so every status is validated at runtime — unknown states 422 (listing `known_states`), illegal moves 409 (listing `allowed`), and the PUT-workflow strand guard keeps stored rows consistent with the definition. `TaskSortField` remains a `StrEnum`: sortable columns are a closed set owned by code. `COMPLETES_META_KEY` (`"completes"`) — defined with the document vocabulary in `workflows/domain/models.py` — names the state-meta flag the tasks feature reads to fire `TaskCompleted`.
 
 ### 4.3 Domain events
 
@@ -438,9 +462,11 @@ Two layers of providers:
 
 The Annotated style means:
 
-1. Dependencies are declared at the **type** level — `Annotated[TaskService, Depends(get_task_service)]` — not as default arguments. mypy can reason about them; refactor tools follow them.
+1. Dependencies are declared at the **type** level — `Annotated[TaskService, Depends(get_task_service)]` — not as default arguments. pyright can reason about them; refactor tools follow them.
 2. Aliases compose. `RepositoryDep` is `Annotated[TaskRepositoryInterface, Depends(get_repository)]`; the route declares `service: TaskServiceDep` and never sees the chain underneath.
 3. Swapping a collaborator (e.g. an `AsyncTaskRepository` in Phase 2) means editing one alias and one provider — call sites are unchanged.
+
+**Cross-feature seam (tasks ↔ workflows).** A service that needs another feature's data receives that feature's **repository interface** via constructor injection: `TaskService(repo, workflows: WorkflowRepositoryInterface, events)` consults the active definition; `WorkflowService(repo, tasks: TaskRepositoryInterface, events)` runs the strand guard over `count_by_status()`. Interface modules are import-graph leaves, so the mutual use is acyclic. Each feature's `dependencies.py` imports the *other feature's concrete repository* (never its `dependencies.py`) and constructs both repositories from the **same request session** — the single-session invariant that makes the read-check-write spans atomic under the single-threaded loop + StaticPool. The active definition is **read fresh per request, no process cache**: one PK read on in-memory SQLite is trivial, and a cache would fight both PUT invalidation and the per-test schema reset (revisit with profiling data only).
 
 ---
 
@@ -591,7 +617,7 @@ dev = [
     "pytest-cov>=4.1",
     "httpx>=0.27",
     "ruff>=0.6",
-    "mypy>=1.10",
+    "pyright>=1.1.411",
     "bandit[toml]>=1.7",
     "pre-commit>=4.0",
     "schemathesis>=3.30",
@@ -606,10 +632,10 @@ severity = "medium"
 line-length = 120
 target-version = "py313"
 
-[tool.mypy]
-python_version = "3.13"
-strict = true
-files = ["app", "tests"]
+[tool.pyright]
+include = ["app", "tests"]
+pythonVersion = "3.13"
+typeCheckingMode = "strict"
 ```
 
 > **Phase 2 tooling considerations** (single source of truth — referenced from FRD §12):
@@ -700,7 +726,7 @@ lint:
 	uv run bandit -c pyproject.toml -r app -q
 
 typecheck:
-	uv run mypy
+	uv run pyright
 
 # Test discovery is path-based. The full suite runs with the default coverage
 # gate (--cov-fail-under=80); individual layers run with --no-cov for speed.
@@ -740,7 +766,7 @@ schemathesis:
 
 1. `make install` (uv sync + pre-commit install)
 2. `uv run pre-commit run --all-files` # ruff, ruff-format, bandit, file hygiene
-3. `make typecheck` # mypy
+3. `make typecheck` # pyright
 4. `make test` # pytest + coverage gate at 80%
 5. `make hurl-e2e` # Hurl scenarios against container
 6. (optional) `make schemathesis` # OpenAPI fuzz

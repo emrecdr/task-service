@@ -1,6 +1,5 @@
 import pytest
 
-from app.services.tasks.constants import Status
 from app.services.tasks.domain.models import Task
 
 
@@ -8,7 +7,7 @@ def _new(**overrides: object) -> Task:
     base: dict[str, object] = {
         "title": "alpha",
         "description": "d",
-        "status": Status.NEW,
+        "status": "new",
         "priority": 3,
     }
     base.update(overrides)
@@ -29,25 +28,25 @@ class TestNormalizeTitle:
 
 class TestFromInput:
     def test_builds_task_with_trimmed_title_and_normalized_key(self) -> None:
-        task = Task.from_input(title="  Hello  ", description=None, status=Status.NEW, priority=3)
+        task = Task.from_input(title="  Hello  ", description=None, status="new", priority=3)
         assert task.title == "Hello"
         assert task.title_key == "hello"
-        assert task.status is Status.NEW
+        assert task.status == "new"
         assert task.priority == 3
 
     def test_rejects_empty_title_after_trim(self) -> None:
         with pytest.raises(ValueError, match="empty"):
-            Task.from_input(title="   ", description=None, status=Status.NEW, priority=1)
+            Task.from_input(title="   ", description=None, status="new", priority=1)
 
     def test_preserves_original_title_verbatim_for_display(self) -> None:
-        task = Task.from_input(title="Fix BUG", description=None, status=Status.NEW, priority=1)
+        task = Task.from_input(title="Fix BUG", description=None, status="new", priority=1)
         assert task.title == "Fix BUG"
         assert task.title_key == "fix bug"
 
 
 class TestCreatedAt:
     def test_default_is_utc_timezone_aware(self) -> None:
-        task = Task.from_input(title="x", description=None, status=Status.NEW, priority=1)
+        task = Task.from_input(title="x", description=None, status="new", priority=1)
         assert task.created_at.tzinfo is not None
         offset = task.created_at.utcoffset()
         assert offset is not None
@@ -56,18 +55,18 @@ class TestCreatedAt:
 
 class TestApplyReplace:
     def test_overwrites_all_mutable_fields_and_recomputes_title_key(self) -> None:
-        task = _new(title="orig", description="d1", status=Status.NEW, priority=1)
-        task.apply_replace(title="  Renamed  ", description="d2", status=Status.IN_PROGRESS, priority=5)
+        task = _new(title="orig", description="d1", status="new", priority=1)
+        task.apply_replace(title="  Renamed  ", description="d2", status="in_progress", priority=5)
         assert task.title == "Renamed"
         assert task.title_key == "renamed"
         assert task.description == "d2"
-        assert task.status is Status.IN_PROGRESS
+        assert task.status == "in_progress"
         assert task.priority == 5
 
     def test_rejects_empty_title(self) -> None:
         task = _new()
         with pytest.raises(ValueError, match="empty"):
-            task.apply_replace(title="   ", description=None, status=Status.NEW, priority=1)
+            task.apply_replace(title="   ", description=None, status="new", priority=1)
 
     def test_clears_description_when_set_to_none(self) -> None:
         task = _new(description="present")
@@ -83,11 +82,11 @@ class TestApplyPatch:
         assert task.title == "alpha"  # untouched
 
     def test_multi_field_update_in_one_pass(self) -> None:
-        task = _new(title="orig", description="d1", status=Status.NEW, priority=1)
-        task.apply_patch({"title": "  Renamed  ", "status": Status.IN_PROGRESS, "priority": 4})
+        task = _new(title="orig", description="d1", status="new", priority=1)
+        task.apply_patch({"title": "  Renamed  ", "status": "in_progress", "priority": 4})
         assert task.title == "Renamed"
         assert task.title_key == "renamed"
-        assert task.status is Status.IN_PROGRESS
+        assert task.status == "in_progress"
         assert task.priority == 4
         assert task.description == "d1"
 

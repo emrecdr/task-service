@@ -32,11 +32,11 @@ A clean, internal HTTP service that owns the canonical list of team tasks. Phase
 
 ## 4. In Scope (Phase 1)
 
-- `Task` domain entity with: numeric ID, unique title, optional description, status (`new` / `in_progress` / `completed`), priority (1–5), `created_at` timestamp.
+- `Task` domain entity with: numeric ID, unique title, optional description, status (governed by the active workflow definition; seeded states `new` / `in_progress` / `completed`), priority (1–5), `created_at` timestamp.
 - HTTP API mounted under `/v1` exposing **Create, List, Get, Update (PUT and PATCH), Delete** for tasks.
 - Query parameters on `GET /v1/tasks` for **filter by status**, **sort by priority**, and **offset/limit pagination**.
 - **In-memory** repository (default adapter: SQLite `:memory:` via SQLModel) behind a pluggable Repository port.
-- **Domain Event Bus** publishing `TaskCreated`, `TaskUpdated`, `TaskStatusChanged`, `TaskCompleted`, `TaskDeleted`. Ships with one listener: a structured-log subscriber.
+- **Domain Event Bus** publishing `TaskCreated`, `TaskUpdated`, `TaskStatusChanged`, `TaskCompleted`, `TaskDeleted`, and `WorkflowUpdated`. Ships with structured-log subscribers for all of them.
 - **Operational endpoints** `/healthz` and `/readyz`, plus a Request-ID middleware that propagates `X-Request-ID` into every log line.
 - **Environment-aware configuration** via per-env `.env.*` files + `pydantic-settings` (`APP_ENV` ∈ {dev, test, qa, prod} drives log level and verbosity).
 - **Test suite** with ≥80% coverage (pytest + httpx).
@@ -84,7 +84,7 @@ The Phase 1 release is considered done when **all** of the following are true:
 2. All Phase 1 user stories (US-01…US-08) pass automated integration tests.
 3. Title uniqueness rule rejects duplicates with HTTP `409 Conflict` and a domain-typed error body.
 4. Test coverage reported by `pytest --cov` is ≥ 80% on the `app/` package.
-5. `ruff check` and `mypy` pass with zero errors in CI.
+5. `ruff check` and `pyright` pass with zero errors in CI.
 6. The README in the repository explains: project structure, how to run locally (with and without Docker), how to run tests, how to override config via `.env`.
 7. A fresh checkout to a running service takes one command (`docker compose up` or `uv run uvicorn …`) and no manual setup beyond that.
 
@@ -132,7 +132,7 @@ Captured here as planning seeds only; detailed designs and TIS revisions happen 
 - **Users module** — tasks created by and assigned to a user.
 - **RBAC** authentication & authorization module (OIDC + role/permission matrix).
 - **Tags module** — tasks can have one or multiple tags.
-- **Workflow Phase module** — make the currently hard-coded statuses (`new`, `in_progress`, `completed`) into a configurable entity with its own endpoints and per-phase business rules.
+- **Workflow Phase module** — ✅ *delivered in Phase 1* (states/transitions as runtime data, `GET/PUT /v1/workflow`, transition enforcement). Remaining for future phases: per-phase business rules (role guards, WIP limits) on the definition's open `meta` channel.
 - **Attachment support** — tasks can have file attachments.
 - Notification adapter for Slack subscribing to `TaskStatusChanged` / `TaskCompleted`.
 - **`/metrics` endpoint** (Prometheus exposition format).

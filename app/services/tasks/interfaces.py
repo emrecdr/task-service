@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 from app.core.constants import OrderDirection
-from app.services.tasks.constants import Status, TaskSortField
+from app.services.tasks.constants import TaskSortField
 from app.services.tasks.domain.models import Task
 
 
@@ -15,7 +15,7 @@ class TaskRepositoryInterface(ABC):
         *,
         title: str,
         description: str | None,
-        status: Status,
+        status: str,
         priority: int,
     ) -> Task: ...
 
@@ -26,7 +26,7 @@ class TaskRepositoryInterface(ABC):
     def list(
         self,
         *,
-        statuses: list[Status] | None,
+        statuses: list[str] | None,
         order_by: TaskSortField,
         order_dir: OrderDirection,
         limit: int,
@@ -40,7 +40,7 @@ class TaskRepositoryInterface(ABC):
         *,
         title: str,
         description: str | None,
-        status: Status,
+        status: str,
         priority: int,
     ) -> tuple[Task, Task]: ...
 
@@ -49,3 +49,6 @@ class TaskRepositoryInterface(ABC):
 
     @abstractmethod
     def delete(self, task_id: int) -> Task: ...
+
+    @abstractmethod
+    def count_by_status(self) -> dict[str, int]: ...

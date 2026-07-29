@@ -38,11 +38,74 @@ CONFLICT_RESPONSE: Final[dict[str, Any]] = {
     "description": _ENVELOPE_DESCRIPTION,
     "content": {
         "application/json": {
+            "examples": {
+                "duplicate_task": {
+                    "summary": "Another task already uses this title",
+                    "value": _envelope_example(
+                        code=ErrorCode.DUPLICATE_TASK,
+                        message="A task with this title already exists.",
+                        details={"title": "ship plan"},
+                    ),
+                },
+                "invalid_transition": {
+                    "summary": "The active workflow does not allow this status move",
+                    "value": _envelope_example(
+                        code=ErrorCode.INVALID_TRANSITION,
+                        message="The active workflow does not allow this move.",
+                        details={"from": "new", "to": "completed", "allowed": ["in_progress"]},
+                    ),
+                },
+            },
+        },
+    },
+}
+
+
+WORKFLOW_CONFLICT_RESPONSE: Final[dict[str, Any]] = {
+    "description": _ENVELOPE_DESCRIPTION,
+    "content": {
+        "application/json": {
             "example": _envelope_example(
-                code=ErrorCode.DUPLICATE_TASK,
-                message="A task with this title already exists.",
-                details={"title": "ship plan"},
+                code=ErrorCode.WORKFLOW_STATES_IN_USE,
+                message="Definition would leave existing tasks in states it does not define.",
+                details={"states": {"in_progress": 3}},
             ),
+        },
+    },
+}
+
+
+WORKFLOW_VALIDATION_RESPONSE: Final[dict[str, Any]] = {
+    "description": _ENVELOPE_DESCRIPTION,
+    "content": {
+        "application/json": {
+            "examples": {
+                "invalid_workflow_definition": {
+                    "summary": "Definition content failed validation (all problems listed)",
+                    "value": _envelope_example(
+                        code=ErrorCode.INVALID_WORKFLOW_DEFINITION,
+                        message="Workflow definition is invalid.",
+                        details={"errors": ["states[1]: duplicate state 'todo'"]},
+                    ),
+                },
+                "validation_error": {
+                    "summary": "Request body is not a JSON object",
+                    "value": _envelope_example(
+                        code=ErrorCode.VALIDATION_ERROR,
+                        message="Request validation failed.",
+                        details={
+                            "errors": [
+                                {
+                                    "type": "dict_type",
+                                    "loc": ["body"],
+                                    "msg": "Input should be a valid dictionary",
+                                    "input": [],
+                                }
+                            ]
+                        },
+                    ),
+                },
+            },
         },
     },
 }

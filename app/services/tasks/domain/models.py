@@ -9,7 +9,6 @@ from app.services.tasks.constants import (
     PRIORITY_MIN,
     TITLE_MAX_LENGTH,
     TITLE_MIN_LENGTH,
-    Status,
 )
 
 # Canonical order is the field-ordering contract for ``TaskUpdated.changed_fields`` event payloads.
@@ -17,13 +16,13 @@ MUTABLE_FIELDS: Final[tuple[str, ...]] = ("title", "description", "status", "pri
 
 
 class Task(SQLModel, table=True):
-    __tablename__ = "tasks"
+    __tablename__ = "tasks"  # pyright: ignore[reportAssignmentType]
 
     id: int | None = Field(default=None, primary_key=True)
     title: str = Field(min_length=TITLE_MIN_LENGTH, max_length=TITLE_MAX_LENGTH)
     title_key: str = Field(index=True, unique=True, max_length=TITLE_MAX_LENGTH)
     description: str | None = Field(default=None, max_length=DESCRIPTION_MAX_LENGTH)
-    status: Status = Field(default=Status.NEW)
+    status: str
     priority: int = Field(ge=PRIORITY_MIN, le=PRIORITY_MAX)
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC),
@@ -49,7 +48,7 @@ class Task(SQLModel, table=True):
         *,
         title: str,
         description: str | None,
-        status: Status,
+        status: str,
         priority: int,
     ) -> Self:
         """Build a Task from caller input, applying normalisation invariants."""
@@ -71,7 +70,7 @@ class Task(SQLModel, table=True):
         *,
         title: str,
         description: str | None,
-        status: Status,
+        status: str,
         priority: int,
     ) -> None:
         """Overwrite every mutable field; ``title_key`` is recomputed from ``title``."""

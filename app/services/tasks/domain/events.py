@@ -1,7 +1,6 @@
 from typing import Final
 
 from app.core.event_bus import Event
-from app.services.tasks.constants import Status
 from app.services.tasks.domain.models import Task
 
 
@@ -17,8 +16,8 @@ class TaskUpdated(Event):
 
 class TaskStatusChanged(Event):
     task: Task
-    from_status: Status
-    to_status: Status
+    from_status: str
+    to_status: str
 
 
 class TaskCompleted(Event):

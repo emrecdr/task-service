@@ -1,11 +1,11 @@
 from typing import Any, Final
 
-from sqlalchemy import func, select
+from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
-from sqlmodel import Session, col
+from sqlmodel import Session, col, select
 
 from app.core.constants import OrderDirection
-from app.services.tasks.constants import Status, TaskSortField
+from app.services.tasks.constants import TaskSortField
 from app.services.tasks.domain.models import MUTABLE_FIELDS, Task
 from app.services.tasks.errors import DuplicateTaskError, TaskNotFoundError
 from app.services.tasks.interfaces import TaskRepositoryInterface
@@ -23,7 +23,7 @@ class SQLModelTaskRepository(TaskRepositoryInterface):
         *,
         title: str,
         description: str | None,
-        status: Status,
+        status: str,
         priority: int,
     ) -> Task:
         task = Task.from_input(
@@ -45,7 +45,7 @@ class SQLModelTaskRepository(TaskRepositoryInterface):
     def list(
         self,
         *,
-        statuses: list[Status] | None,
+        statuses: list[str] | None,
         order_by: TaskSortField,
         order_dir: OrderDirection,
         limit: int,
@@ -72,7 +72,7 @@ class SQLModelTaskRepository(TaskRepositoryInterface):
         *,
         title: str,
         description: str | None,
-        status: Status,
+        status: str,
         priority: int,
     ) -> tuple[Task, Task]:
         task = self.get(task_id)
@@ -95,6 +95,10 @@ class SQLModelTaskRepository(TaskRepositoryInterface):
         self._session.delete(task)
         self._session.commit()
         return snapshot
+
+    def count_by_status(self) -> dict[str, int]:
+        rows = self._session.exec(select(col(Task.status), func.count()).group_by(col(Task.status))).all()
+        return dict(rows)
 
     def _commit_or_translate(self, title: str) -> None:
         """Commit; translate a ``title_key`` UNIQUE violation into ``DuplicateTaskError``."""

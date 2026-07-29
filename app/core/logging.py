@@ -11,10 +11,11 @@ def setup_logging() -> None:
         structlog.processors.add_log_level,
         structlog.processors.TimeStamper(fmt="iso", utc=True),
         structlog.processors.StackInfoRenderer(),
-        structlog.processors.format_exc_info,
     ]
     if settings.json_logs:
-        processors.append(structlog.processors.JSONRenderer())
+        # format_exc_info belongs to machine renderers only; ConsoleRenderer
+        # pretty-prints exceptions itself and warns if the field is pre-formatted.
+        processors.extend([structlog.processors.format_exc_info, structlog.processors.JSONRenderer()])
     else:
         processors.append(structlog.dev.ConsoleRenderer())
 

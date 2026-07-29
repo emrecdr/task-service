@@ -65,6 +65,37 @@ async def test_patch_empty_body_returns_422_empty_update(client: AsyncClient, cr
     assert_error(r, 422, ErrorCode.EMPTY_UPDATE)
 
 
+async def test_patch_explicit_null_title_returns_422(client: AsyncClient, create_task: CreateTask) -> None:
+    """``title`` is non-nullable: explicit JSON null must reject, not crash mid-domain."""
+    task_id = await create_task("x")
+    r = await client.patch(f"/v1/tasks/{task_id}", json={"title": None})
+    assert_error(r, 422, ErrorCode.VALIDATION_ERROR)
+    # Rejected null must not mutate the row.
+    fetched = await client.get(f"/v1/tasks/{task_id}")
+    assert fetched.json()["title"] == "x"
+
+
+async def test_patch_explicit_null_status_returns_422(client: AsyncClient, create_task: CreateTask) -> None:
+    task_id = await create_task("x")
+    r = await client.patch(f"/v1/tasks/{task_id}", json={"status": None})
+    assert_error(r, 422, ErrorCode.VALIDATION_ERROR)
+
+
+async def test_patch_explicit_null_priority_returns_422(client: AsyncClient, create_task: CreateTask) -> None:
+    task_id = await create_task("x")
+    r = await client.patch(f"/v1/tasks/{task_id}", json={"priority": None})
+    assert_error(r, 422, ErrorCode.VALIDATION_ERROR)
+
+
+async def test_patch_explicit_null_description_clears_field(client: AsyncClient, create_task: CreateTask) -> None:
+    """``description`` is genuinely nullable: explicit null clears it."""
+    task_id = await create_task("x")
+    await client.patch(f"/v1/tasks/{task_id}", json={"description": "to be cleared"})
+    r = await client.patch(f"/v1/tasks/{task_id}", json={"description": None})
+    assert r.status_code == 200, r.text
+    assert r.json()["description"] is None
+
+
 async def test_patch_schema_documents_min_properties(client: AsyncClient) -> None:
     r = await client.get("/openapi.json")
     assert r.status_code == 200

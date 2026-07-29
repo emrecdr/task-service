@@ -29,7 +29,7 @@ separate ORM/domain split (TIS §4.1 Decision callout).
 | `title`       | `str` 1..200    | preserved verbatim for display                                   |
 | `title_key`   | `str` UNIQUE    | canonical uniqueness key = `title.strip().casefold()` (FRD §2.4) |
 | `description` | `str` 0..2000   | optional                                                         |
-| `status`      | `Status` enum   | `new`, `in_progress`, `completed`                                |
+| `status`      | `str`           | a state of the **active workflow definition** (seed: `new`, `in_progress`, `completed`) |
 | `priority`    | `int` 1..5      |                                                                  |
 | `created_at`  | `datetime UTC`  | server-owned; aware datetime; RFC 3339 with `Z` suffix on wire   |
 
@@ -42,11 +42,15 @@ separate ORM/domain split (TIS §4.1 Decision callout).
   `TaskPatch`) use `extra="forbid"` so attempts to set them surface as
   `read_only_field` (422).
 
-## Enums
+## States
 
-`app/services/tasks/constants.py::Status` — `new`, `in_progress`, `completed`. The
-only valid lifecycle transitions are open; the service enforces no state
-machine in Phase 1 (any → any is allowed).
+Task states are **runtime data** owned by the active workflow definition
+(`app/services/workflows/`, `GET/PUT /v1/workflow`) — there is deliberately no
+status enum. The service enforces the definition's transition table on every
+status change; the shipped seed is behavior-identical to the original
+any → any contract. The state-meta flag this feature reads to fire `TaskCompleted` is
+`COMPLETES_META_KEY`, defined with the document vocabulary in
+`workflows/domain/models.py`.
 
 ## Events (FRD §5.1)
 
@@ -59,7 +63,7 @@ HTTP response:
 | `TaskCreated`        | after a successful `POST /v1/tasks`                          |
 | `TaskUpdated`        | only when at least one mutable field actually changed        |
 | `TaskStatusChanged`  | only when `status` was among the changed fields              |
-| `TaskCompleted`      | convenience fanout — when `status` transitioned to `completed` |
+| `TaskCompleted`      | convenience fanout — when the entered state carries `"completes": true` |
 | `TaskDeleted`        | after a successful `DELETE`, carrying the pre-delete snapshot |
 
 Mutable fields (`{"title", "description", "status", "priority"}`) are the
@@ -78,6 +82,7 @@ envelope and surfaces as 500.
 | exception              | status | `error.code`        |
 | ---------------------- | ------ | ------------------- |
 | `DuplicateTaskError`   | 409    | `duplicate_task`    |
+| `InvalidTransitionError` | 409  | `invalid_transition` |
 | `TaskNotFoundError`    | 404    | `task_not_found`    |
 | `EmptyUpdateError`     | 422    | `empty_update`      |
 
@@ -97,6 +102,7 @@ All under `settings.api_prefix` (default `/v1`):
 | PUT    | `/tasks/{id}`    | 200/404/409 | `TaskUpdated`(+`StatusChanged`+`Completed`)* |
 | PATCH  | `/tasks/{id}`    | 200/404/409/422 | same as PUT*                     |
 | DELETE | `/tasks/{id}`    | 204/404  | `TaskDeleted`                        |
+| GET    | `/tasks/{id}/transitions` | 200/404 | — (legal moves + definition `meta` for UI buttons) |
 
 \* events only fire when the corresponding fields actually changed.
 
@@ -106,10 +112,10 @@ Feature is hexagonal-internal (see `CLAUDE.md` for the full rule):
 
 ```
 api/        ← FastAPI routes; only place that imports fastapi inside the feature
-application/← TaskService + DTOs; depends on domain/ and interfaces.py
+application/← TaskService + DTOs; depends on domain/, interfaces.py, and workflows' interfaces (enforcement seam)
 domain/     ← Task entity + events + MUTABLE_FIELDS; pure data + invariants
 infrastructure/ ← SQLModelTaskRepository + log_event listener
-interfaces.py   ← TaskRepositoryInterface ABC (Status / TaskSortField enums in constants.py)
+interfaces.py   ← TaskRepositoryInterface ABC (TaskSortField enum in constants.py)
 errors.py       ← feature-typed exceptions, all inheriting from app.core.errors
 dependencies.py ← FastAPI providers composing repo → service
 ```

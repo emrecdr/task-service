@@ -13,6 +13,7 @@ from app.services.tasks.application.dto import (
     TaskListResponse,
     TaskPatch,
     TaskResponse,
+    TaskTransitionsResponse,
 )
 from app.services.tasks.dependencies import TaskQueryParamsDep, TaskServiceDep
 from app.services.tasks.domain.models import Task
@@ -80,6 +81,29 @@ async def get_task(
     service: TaskServiceDep,
 ) -> Task:
     return await service.get(task_id)
+
+
+# ======================================================= #
+# ----- Task Legal Transitions Route ----- #
+
+
+@router.get(
+    "/{task_id}/transitions",
+    response_model=TaskTransitionsResponse,
+    responses={404: NOT_FOUND_RESPONSE},
+)
+async def task_transitions(
+    task_id: TaskIdPath,
+    service: TaskServiceDep,
+) -> TaskTransitionsResponse:
+    task, transitions = await service.legal_moves(task_id)
+    return TaskTransitionsResponse.model_validate(
+        {
+            "task_id": task.id,
+            "status": task.status,
+            "transitions": [{"name": t.name, "to": t.to_state, "meta": dict(t.meta)} for t in transitions],
+        }
+    )
 
 
 # ======================================================= #

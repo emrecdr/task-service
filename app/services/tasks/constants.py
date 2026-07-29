@@ -4,12 +4,6 @@ from enum import StrEnum
 from typing import Final
 
 
-class Status(StrEnum):
-    NEW = "new"
-    IN_PROGRESS = "in_progress"
-    COMPLETED = "completed"
-
-
 class TaskSortField(StrEnum):
     PRIORITY = "priority"
 

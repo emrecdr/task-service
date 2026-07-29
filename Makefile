@@ -29,12 +29,8 @@ lint: ## 🧹 Ruff check + format + Bandit security scan
 	uv run ruff format --check app tests
 	uv run bandit -c pyproject.toml -r app -q
 
-typecheck: ## 🔍 mypy strict on app + tests
-	uv run mypy
-
-typecheck-fresh: ## 🔍 mypy with .mypy_cache wiped — mirrors CI's clean container
-	rm -rf .mypy_cache
-	uv run mypy
+typecheck: ## 🔍 pyright strict on app + tests
+	uv run pyright
 
 # --- Tests -----------------------------------------------------------------
 
@@ -106,7 +102,7 @@ compose-logs: ## 📜 Tail container logs (Ctrl+C to stop)
 clean: ## 🧹 Remove Python bytecode and tool caches (preserves .venv)
 	find . -path ./.venv -prune -o -type d -name '__pycache__' -exec rm -rf {} +
 	find . -path ./.venv -prune -o -type f -name '*.py[cod]' -delete
-	rm -rf .pytest_cache .mypy_cache .ruff_cache
+	rm -rf .pytest_cache .ruff_cache
 	@echo "✓ python + tool caches cleaned"
 
 clean-all: clean ## 💣 ``clean`` + coverage, build artifacts, Hurl reports

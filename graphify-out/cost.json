@@ -1,0 +1,38 @@
+{
+  "runs": [
+    {
+      "date": "2026-05-14T17:57:33.130571+00:00",
+      "input_tokens": 136949,
+      "output_tokens": 34236,
+      "files": 52
+    },
+    {
+      "date": "2026-05-16T13:41:04.006419+00:00",
+      "input_tokens": 263385,
+      "output_tokens": 0,
+      "files": 63
+    },
+    {
+      "date": "2026-05-16T22:15:07.705402+00:00",
+      "input_tokens": 190662,
+      "output_tokens": 0,
+      "files": 62
+    },
+    {
+      "date": "2026-07-27T20:17:56.410966+00:00",
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "files": 69,
+      "note": "incremental update; subagent token usage not captured (host-agent extraction)"
+    },
+    {
+      "date": "2026-07-27T23:09:09.604978+00:00",
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "files": 61,
+      "note": "incremental update post workflow-feature; host-agent extraction"
+    }
+  ],
+  "total_input_tokens": 590996,
+  "total_output_tokens": 34236
+}

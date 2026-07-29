@@ -5,7 +5,7 @@ from collections.abc import Iterator
 import pytest
 from app.core.constants import OrderDirection
 from app.core.database import engine
-from app.services.tasks.constants import Status, TaskSortField
+from app.services.tasks.constants import TaskSortField
 from app.services.tasks.infrastructure.repository import SQLModelTaskRepository
 from sqlmodel import Session
 
@@ -19,9 +19,9 @@ def session() -> Iterator[Session]:
 def test_list_orders_by_priority_then_created_at(session: Session) -> None:
     """Tiebreaker contract: equal priorities resolve by ``created_at`` ascending (FRD §3.3)."""
     repo = SQLModelTaskRepository(session)
-    a = repo.add(title="a", description=None, status=Status.NEW, priority=5)
-    b = repo.add(title="b", description=None, status=Status.NEW, priority=1)
-    c = repo.add(title="c", description=None, status=Status.NEW, priority=5)
+    a = repo.add(title="a", description=None, status="new", priority=5)
+    b = repo.add(title="b", description=None, status="new", priority=1)
+    c = repo.add(title="c", description=None, status="new", priority=5)
 
     items_desc, total = repo.list(
         statuses=None,

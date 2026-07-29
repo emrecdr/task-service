@@ -91,9 +91,19 @@ async def test_list_negative_offset_returns_422(client: AsyncClient) -> None:
     assert_error(r, 422, ErrorCode.VALIDATION_ERROR)
 
 
-async def test_list_unknown_status_returns_422(client: AsyncClient) -> None:
-    r = await client.get("/v1/tasks?status=bogus")
+async def test_list_offset_above_int64_returns_422(client: AsyncClient) -> None:
+    """SQLite binds offset as INT64 — an unbounded int overflows the driver, not validation."""
+    r = await client.get("/v1/tasks?offset=9223372036854775808")
     assert_error(r, 422, ErrorCode.VALIDATION_ERROR)
+
+
+async def test_list_unknown_status_filter_returns_empty(client: AsyncClient) -> None:
+    """Free-form states: an unknown filter value matches nothing (200 []), it is not a 422."""
+    await _seed(client)
+    r = await client.get("/v1/tasks?status=bogus")
+    assert r.status_code == 200, r.text
+    assert r.json()["items"] == []
+    assert r.json()["total"] == 0
 
 
 async def test_list_empty_returns_zero_total(client: AsyncClient) -> None:

@@ -1,0 +1,17 @@
+# Auto-generated test output — regenerated every Hurl/Schemathesis run.
+# Indexing these into the knowledge graph creates churn without semantic value.
+reports/
+
+# Graphify's own output directory.
+graphify-out/
+
+# Plugin / harness state directories (not source-of-truth content).
+.devt/
+.planning/
+.claude/
+
+# Coverage and cache artifacts.
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
