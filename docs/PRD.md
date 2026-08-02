@@ -32,10 +32,10 @@ A clean, internal HTTP service that owns the canonical list of team tasks. Phase
 
 ## 4. In Scope (Phase 1)
 
-- `Task` domain entity with: numeric ID, unique title, optional description, status (governed by the active workflow definition; seeded states `new` / `in_progress` / `completed`), priority (1–5), `created_at` timestamp.
+- `Task` domain entity with: UUID (UUIDv7) ID, unique title, optional description, status (governed by the active workflow definition; seeded states `new` / `in_progress` / `completed`), priority (1–5), `created_at` timestamp.
 - HTTP API mounted under `/v1` exposing **Create, List, Get, Update (PUT and PATCH), Delete** for tasks.
 - Query parameters on `GET /v1/tasks` for **filter by status**, **sort by priority**, and **offset/limit pagination**.
-- **In-memory** repository (default adapter: SQLite `:memory:` via SQLModel) behind a pluggable Repository port.
+- **PostgreSQL** repository (async SQLAlchemy over asyncpg, via SQLModel) behind a pluggable Repository port. (Phase 1 shipped an in-memory SQLite adapter; Phase 2 swapped it for Postgres — the port held.)
 - **Domain Event Bus** publishing `TaskCreated`, `TaskUpdated`, `TaskStatusChanged`, `TaskCompleted`, `TaskDeleted`, and `WorkflowUpdated`. Ships with structured-log subscribers for all of them.
 - **Operational endpoints** `/healthz` and `/readyz`, plus a Request-ID middleware that propagates `X-Request-ID` into every log line.
 - **Environment-aware configuration** via per-env `.env.*` files + `pydantic-settings` (`APP_ENV` ∈ {dev, test, qa, prod} drives log level and verbosity).
@@ -60,7 +60,7 @@ The following are deliberately excluded from Phase 1 and recorded here so future
 | ------------------------- | ------------------------------------------------------------------------------------------------------ |
 | **The Developer**         | A predictable REST API to script task creation from CLI tools and CI jobs.                             |
 | **The Product Owner**     | Confidence that no two tasks have the same title and that priorities follow the agreed 1–5 scale.      |
-| **The Systems Architect** | Assurance that swapping the in-memory store for Postgres later does not touch the domain layer.        |
+| **The Systems Architect** | Confirmation that the swap to Postgres left the domain layer untouched — the port held.                |
 | **The On-Call Engineer**  | A `/healthz` that returns the truth, structured logs with a request ID, and standardized error bodies. |
 
 ## 7. User Stories (Phase 1)
@@ -96,14 +96,14 @@ The Phase 1 release is considered done when **all** of the following are true:
 | Reliability          | The service must start with an empty store and remain operational; no read should ever leak storage-layer exceptions to the API consumer.                                                                                                                                                                                                                                                                                           |
 | Observability        | Every request produces at least one structured log line including `request_id`, `method`, `path`, `status`, and `duration_ms`.                                                                                                                                                                                                                                                                                                      |
 | **Time consistency** | The PDF establishes that _"the team is spread across multiple time zones."_ Every timestamp the service stores, returns, or logs must therefore be **timezone-aware UTC** — never naive `datetime`, never local time. API responses serialize timestamps as RFC 3339 with a `Z` suffix (`2026-05-14T13:01:42Z`). Clients are expected to convert to local time at the presentation edge; the service is the single source of truth. |
-| Portability          | The service must run on Linux and macOS, Python 3.13+. No OS-specific dependencies.                                                                                                                                                                                                                                                                                                                                                 |
+| Portability          | The service must run on Linux and macOS, Python 3.14+. No OS-specific dependencies.                                                                                                                                                                                                                                                                                                                                                 |
 | Maintainability      | The feature-first hex layout (FRD §1) must be preserved — adapters never short-circuit the application or domain layers.                                                                                                                                                                                                                                                                                                            |
 
 ## 10. Assumptions
 
 - Phase 1 callers are trusted internal services or developers; no abuse-protection (rate limiting, captcha) is needed yet.
-- Task data is not sensitive and may live in memory across restarts (data loss on restart is acceptable for Phase 1).
-- The service runs as a single instance in Phase 1; concurrency concerns beyond a single uvicorn worker are out of scope.
+- Task data is not sensitive. It is now durable in PostgreSQL and survives restarts (Phase 1's in-memory store, where loss on restart was acceptable, has been retired).
+- The service supports multiple uvicorn workers (`WEB_CONCURRENCY`, default 1), made safe by Postgres transaction-scoped advisory locks; the Phase-1 single-instance assumption is lifted.
 - The team is comfortable with Python, FastAPI, and `uv` as the dependency manager.
 
 ## 11. Risks
@@ -125,9 +125,11 @@ FastAPI + SQLModel (`:memory:`) + Internal Event Bus + structured logs + Docker.
 
 Captured here as planning seeds only; detailed designs and TIS revisions happen when each item is scheduled. This list is the **single source of truth** for the product roadmap — FRD defers to it; TIS §10.1 owns any Phase 2 tooling considerations (e.g., `import-linter` reintroduction).
 
-- Persistent storage adapter (PostgreSQL / MySQL).
+**Status: in progress — Phase 2 kicked off 2026-08-02** with a production-hardening slice: security headers, request size/time limits, config-driven CORS (off by default), the `/metrics` endpoint below, CI supply-chain scanning (Dependabot / Trivy / `pip-audit`), and Schemathesis gated in CI (TIS §10.1). A durability slice followed on 2026-08-03: persistent PostgreSQL 17 storage (async SQLAlchemy over asyncpg), Alembic migrations run at deploy via the Docker entrypoint, UUIDv7 public task IDs (stdlib `uuid.uuid7()`), the Python 3.14 upgrade, `WEB_CONCURRENCY` multi-worker support made safe by transaction-scoped advisory locks (`pg_advisory_xact_lock`), and a negotiated zstd response-compression middleware (Python 3.14 stdlib `compression.zstd`). Items marked ✅ are delivered.
+
+- **Persistent storage adapter** — ✅ *delivered 2026-08-03* (PostgreSQL 17 via async SQLAlchemy over asyncpg, replacing the in-memory SQLite store; UUIDv7 public task IDs via stdlib `uuid.uuid7()`; `WEB_CONCURRENCY` multi-worker support made safe by transaction-scoped `pg_advisory_xact_lock`).
 - Cache layer (Redis, Memcached).
-- Schema migrations via **Alembic**.
+- Schema migrations via **Alembic** — ✅ *delivered 2026-08-03* (run at deploy via the Docker entrypoint).
 - Rate limiting via **slowapi**.
 - **Users module** — tasks created by and assigned to a user.
 - **RBAC** authentication & authorization module (OIDC + role/permission matrix).
@@ -135,6 +137,6 @@ Captured here as planning seeds only; detailed designs and TIS revisions happen 
 - **Workflow Phase module** — ✅ *delivered in Phase 1* (states/transitions as runtime data, `GET/PUT /v1/workflow`, transition enforcement). Remaining for future phases: per-phase business rules (role guards, WIP limits) on the definition's open `meta` channel.
 - **Attachment support** — tasks can have file attachments.
 - Notification adapter for Slack subscribing to `TaskStatusChanged` / `TaskCompleted`.
-- **`/metrics` endpoint** (Prometheus exposition format).
+- **`/metrics` endpoint** (Prometheus exposition format) — ✅ *delivered 2026-08-02* (via `prometheus-fastapi-instrumentator`; ops-only, excluded from the OpenAPI schema).
 - **Audit log and soft delete** — non-destructive deletes, full mutation history per task.
 - **Front-end SPA** consuming `/v1`.

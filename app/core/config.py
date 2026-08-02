@@ -2,14 +2,29 @@ import logging
 import os
 from typing import Final
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from app.core.constants import Environment
+from app.core.constants import (
+    DEFAULT_DB_MAX_OVERFLOW,
+    DEFAULT_DB_POOL_RECYCLE_SECONDS,
+    DEFAULT_DB_POOL_SIZE,
+    DEFAULT_MAX_REQUEST_BODY_BYTES,
+    DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    Environment,
+)
 
 # Stdlib-derived to stay correct if Python adds a level; NOTSET is excluded
 # because it disables filtering and is not a meaningful operator-facing choice.
 _VALID_LOG_LEVELS: Final[frozenset[str]] = frozenset(logging.getLevelNamesMapping()) - {"NOTSET"}
+
+# Per-environment default numeric log level (overridden by an explicit ``LOG_LEVEL``).
+_DEFAULT_LOG_LEVEL_BY_ENV: Final[dict[Environment, int]] = {
+    Environment.DEV: logging.DEBUG,
+    Environment.TEST: logging.WARNING,
+    Environment.QA: logging.INFO,
+    Environment.PROD: logging.INFO,
+}
 
 
 class Settings(BaseSettings):
@@ -24,8 +39,25 @@ class Settings(BaseSettings):
     app_env: Environment = Environment.DEV
     project_name: str = "Internal Task Service"
     api_prefix: str = "/v1"
-    database_url: str = "sqlite+pysqlite:///:memory:"
+    database_url: str = "postgresql+asyncpg://taskservice:taskservice@localhost:5432/taskservice"
     log_level: str | None = None
+
+    # CORS allow-list. Empty (the default) leaves CORS off entirely — the SPA
+    # that needs it is Phase 2 (TIS §12). Set as a JSON array, e.g.
+    # ``CORS_ALLOW_ORIGINS='["https://app.example.com"]'``.
+    cors_allow_origins: list[str] = []
+    # Reject request bodies whose declared ``Content-Length`` exceeds this.
+    max_request_body_bytes: int = Field(default=DEFAULT_MAX_REQUEST_BODY_BYTES, gt=0)
+    # Wall-clock budget for producing a response before returning 504.
+    request_timeout_seconds: float = Field(default=DEFAULT_REQUEST_TIMEOUT_SECONDS, gt=0)
+
+    # Async DB connection pool, per worker. Defaults = SQLAlchemy QueuePool defaults; lower
+    # ``DB_POOL_SIZE``/``DB_MAX_OVERFLOW`` for high ``WEB_CONCURRENCY`` so total connections
+    # (~(size+overflow)·workers) stay under Postgres ``max_connections``.
+    # ``DB_POOL_RECYCLE_SECONDS=-1`` disables age-based recycling (``pool_pre_ping`` covers staleness).
+    db_pool_size: int = Field(default=DEFAULT_DB_POOL_SIZE, ge=1)
+    db_max_overflow: int = Field(default=DEFAULT_DB_MAX_OVERFLOW, ge=0)
+    db_pool_recycle_seconds: int = Field(default=DEFAULT_DB_POOL_RECYCLE_SECONDS, ge=-1)
 
     @field_validator("log_level")
     @classmethod
@@ -53,14 +85,7 @@ class Settings(BaseSettings):
         """Effective numeric log level; explicit ``LOG_LEVEL`` overrides the env default."""
         if self.log_level is not None:
             return logging.getLevelNamesMapping()[self.log_level]
-
-        default_by_env: dict[Environment, int] = {
-            Environment.DEV: logging.DEBUG,
-            Environment.TEST: logging.WARNING,
-            Environment.QA: logging.INFO,
-            Environment.PROD: logging.INFO,
-        }
-        return default_by_env[self.app_env]
+        return _DEFAULT_LOG_LEVEL_BY_ENV[self.app_env]
 
     @property
     def json_logs(self) -> bool:

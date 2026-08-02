@@ -1,6 +1,6 @@
 # Internal Task Service
 
-A small HTTP service that owns the canonical list of internal team tasks: create, list (with filter/sort/paginate), fetch, update, and delete. Phase 1 ships as a single uvicorn worker with in-memory SQLite, structured logging, and a swappable repository contract so Phase 2 can move to Postgres without touching the domain or application layers.
+A small HTTP service that owns the canonical list of internal team tasks: create, list (with filter/sort/paginate), fetch, update, and delete. It persists to PostgreSQL through an async SQLAlchemy repository, scales to multiple uvicorn workers (`WEB_CONCURRENCY`), and keeps a swappable repository contract behind an `interfaces.py` port — the Phase-2 move from in-memory SQLite to Postgres touched only the infrastructure adapter, not the domain or application layers.
 
 The locked design lives in [`docs/PRD.md`](docs/PRD.md) (product), [`docs/FRD.md`](docs/FRD.md) (functional), and [`docs/TIS.md`](docs/TIS.md) (technical).
 
@@ -12,21 +12,22 @@ A small distributed team kept losing track of agreed action items in chat thread
 
 All endpoints are mounted under `/v1`. Open the interactive docs at <http://localhost:8000/docs> for the live schema.
 
-| Method   | Path             | Purpose                         | Success           | Error envelope codes                                             |
-| -------- | ---------------- | ------------------------------- | ----------------- | ---------------------------------------------------------------- |
-| `POST`   | `/v1/tasks`      | Create a task                   | `201 Created`     | 409 `duplicate_task`, 422 `validation_error` / `read_only_field` |
-| `GET`    | `/v1/tasks`      | List (filter / sort / paginate) | `200 OK`          | 422 `validation_error`                                           |
-| `GET`    | `/v1/tasks/{id}` | Fetch one task                  | `200 OK`          | 404 `task_not_found`                                             |
-| `PUT`    | `/v1/tasks/{id}` | Replace all mutable fields      | `200 OK`          | 404, 409, 422                                                    |
-| `PATCH`  | `/v1/tasks/{id}` | Update any subset of fields     | `200 OK`          | 404, 409, 422 (incl. `empty_update`)                             |
-| `DELETE` | `/v1/tasks/{id}` | Delete a task                   | `204 No Content`  | 404                                                              |
-| `GET`    | `/v1/tasks/{id}/transitions` | Legal moves out of the task's state (UI buttons) | `200 OK` | 404 `task_not_found`                             |
-| `GET`    | `/v1/workflow`   | The active workflow definition  | `200 OK`          | —                                                                |
-| `PUT`    | `/v1/workflow`   | Replace the workflow definition | `200 OK`          | 409 `workflow_states_in_use`, 422 `invalid_workflow_definition`  |
-| `GET`    | `/healthz`       | Liveness — synchronous, no I/O  | `200 OK`          | —                                                                |
-| `GET`    | `/readyz`        | Readiness — DB round-trip       | `200 OK` or `503` | —                                                                |
+| Method   | Path                         | Purpose                                                     | Success           | Error envelope codes                                                                                                                              |
+| -------- | ---------------------------- | ----------------------------------------------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST`   | `/v1/tasks`                  | Create a task                                               | `201 Created`     | 409 `duplicate_task` / `invalid_transition`, 422 `validation_error` / `unknown_status` / `read_only_field`                                        |
+| `GET`    | `/v1/tasks`                  | List (filter / sort / paginate)                             | `200 OK`          | 422 `validation_error`                                                                                                                            |
+| `GET`    | `/v1/tasks/{id}`             | Fetch one task                                              | `200 OK`          | 404 `task_not_found`, 422 `validation_error`                                                                                                      |
+| `PUT`    | `/v1/tasks/{id}`             | Replace all mutable fields                                  | `200 OK`          | 404 `task_not_found`, 409 `duplicate_task` / `invalid_transition`, 422 `validation_error` / `unknown_status` / `read_only_field`                  |
+| `PATCH`  | `/v1/tasks/{id}`             | Update any subset of fields                                 | `200 OK`          | 404 `task_not_found`, 409 `duplicate_task` / `invalid_transition`, 422 `validation_error` / `unknown_status` / `read_only_field` / `empty_update` |
+| `DELETE` | `/v1/tasks/{id}`             | Delete a task                                               | `204 No Content`  | 404 `task_not_found`, 422 `validation_error`                                                                                                      |
+| `GET`    | `/v1/tasks/{id}/transitions` | Legal moves out of the task's state (UI buttons)            | `200 OK`          | 404 `task_not_found`, 422 `validation_error`                                                                                                      |
+| `GET`    | `/v1/workflow`               | The active workflow definition                              | `200 OK`          | —                                                                                                                                                 |
+| `PUT`    | `/v1/workflow`               | Replace the workflow definition                             | `200 OK`          | 409 `workflow_states_in_use`, 422 `invalid_workflow_definition` / `validation_error`                                                              |
+| `GET`    | `/healthz`                   | Liveness — synchronous, no I/O                              | `200 OK`          | —                                                                                                                                                 |
+| `GET`    | `/readyz`                    | Readiness — DB round-trip                                   | `200 OK` or `503` | —                                                                                                                                                 |
+| `GET`    | `/metrics`                   | Prometheus exposition (ops-only, not in the OpenAPI schema) | `200 OK`          | —                                                                                                                                                 |
 
-Every non-2xx response uses the same envelope: `{"error": {"code", "message", "details", "request_id"}}`. The `code` is machine-readable so consumers can branch without parsing English.
+Every non-2xx response uses the same envelope: `{"error": {"code", "message", "details", "request_id"}}`. The `code` is machine-readable so consumers can branch without parsing English. Two responses are enforced globally by request-hardening middleware rather than per-route: `413 payload_too_large` (body over the size limit) and `504 request_timeout` (handler over the time budget).
 
 ### Example: create, update, list
 
@@ -35,10 +36,10 @@ Every non-2xx response uses the same envelope: `{"error": {"code", "message", "d
 curl -X POST http://localhost:8000/v1/tasks \
   -H 'Content-Type: application/json' \
   -d '{"title": "ship task service", "priority": 4}'
-# → 201 {"id":1,"title":"ship task service","status":"new","priority":4,...}
+# → 201 {"id":"0192b3c4-5d6e-7f80-9a1b-2c3d4e5f6070","title":"ship task service","status":"new","priority":4,...}
 
 # Move to in-progress
-curl -X PATCH http://localhost:8000/v1/tasks/1 \
+curl -X PATCH http://localhost:8000/v1/tasks/0192b3c4-5d6e-7f80-9a1b-2c3d4e5f6070 \
   -H 'Content-Type: application/json' \
   -d '{"status": "in_progress"}'
 
@@ -56,8 +57,8 @@ curl http://localhost:8000/v1/workflow
 # → 200 {"version":1,"created_at":"...","definition":{"states":[...],"transitions":[...]}}
 
 # Which moves are legal for task 1 right now (what a UI renders as buttons)
-curl http://localhost:8000/v1/tasks/1/transitions
-# → 200 {"task_id":1,"status":"in_progress","transitions":[{"name":"Complete","to":"completed","meta":{}}, ...]}
+curl http://localhost:8000/v1/tasks/0192b3c4-5d6e-7f80-9a1b-2c3d4e5f6070/transitions
+# → 200 {"task_id":"0192b3c4-5d6e-7f80-9a1b-2c3d4e5f6070","status":"in_progress","transitions":[{"name":"Complete","to":"completed","meta":{}}, ...]}
 ```
 
 ## Approach
@@ -80,6 +81,8 @@ The service is built around four design choices, each tied to an objective from 
 - **Single global error handler** converts every `AppError` subclass and every Pydantic `RequestValidationError` into the same envelope. Domain code never builds HTTP responses — `raise DuplicateTaskError(details={"title": …})` is enough. In `dev` mode only, raisers may pass `original_error=` and the envelope's `details.cause` will surface the underlying exception (gated by `settings.expose_stack_traces`); other envs strip it.
 - **All timestamps UTC, always.** `datetime.now(UTC)` everywhere; the Docker image sets `TZ=UTC`. Naïve datetimes are a bug, surfaced by pyright and the `ensure_utc` boundary helper.
 - **Request-ID middleware** generates a UUIDv4 when `X-Request-ID` is absent, binds it to the structlog context, and echoes it on the response. Every log line in a request carries the same id.
+- **Request-hardening middleware** attaches security headers (`X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`; HSTS in prod), bounds request body size and handler wall-clock time (enveloped `413` / `504`), and exposes Prometheus metrics at `/metrics`. CORS is config-driven and off by default (empty allow-list) until the Phase 2 SPA lands.
+- **Negotiated zstd compression** (`ZstdMiddleware`, installed innermost) compresses buffered responses over 500 bytes with Python 3.14's stdlib `compression.zstd` (PEP 784) when the client sends `Accept-Encoding: zstd`, tagging them `Content-Encoding: zstd` + `Vary: Accept-Encoding`. Streaming, already-encoded, and sub-threshold responses pass through untouched.
 
 ## Project layout
 
@@ -92,15 +95,17 @@ app/
 ├── core/                          # Cross-cutting infrastructure — no feature imports here
 │   ├── config.py                  # pydantic-settings + APP_ENV behavior matrix
 │   ├── constants.py               # Environment / OrderDirection enums + INT64_MAX, list-limit bounds
-│   ├── database.py                # SQLAlchemy engine + StaticPool wiring + init_schema
+│   ├── compression.py             # ZstdMiddleware — negotiated zstd response compression (PEP 784)
+│   ├── database.py                # Async SQLAlchemy engine + async_sessionmaker (asyncpg); configure/dispose
 │   ├── datetime_utils.py          # ensure_utc helper (boundary normaliser)
 │   ├── dependencies.py            # Cross-cutting DI: get_session, get_event_bus
+│   ├── diagnose.py                # /diagnose ops endpoint (dev-gated detail, secret-masked)
 │   ├── errors.py                  # ErrorCode enum, AppError hierarchy, global handlers
 │   ├── event_bus.py               # In-process EventBus (publish via BackgroundTasks)
 │   ├── health.py                  # /healthz and /readyz handlers
 │   ├── logging.py                 # structlog configuration
-│   ├── middleware.py              # Request-ID middleware
-│   └── openapi_responses.py       # Shared 404 / 409 / 422 response specs for the router
+│   ├── middleware.py              # Request-ID, security headers, body-size + timeout limits
+│   └── openapi_responses.py       # ErrorEnvelope schema + shared 404 / 409 / 422 response specs
 └── services/
     └── tasks/                     # Feature-first vertical slice — full domain/app/infra/api
         ├── domain/                # Task SQLModel (table=True) + 5 domain events + MUTABLE_FIELDS
@@ -110,13 +115,18 @@ app/
         ├── interfaces.py          # TaskRepositoryInterface ABC
         ├── constants.py           # TaskSortField StrEnum, field bounds, COMPLETES_META_KEY
         ├── dependencies.py        # Feature DI providers (repository, service, query params)
-        ├── errors.py              # DuplicateTaskError, TaskNotFoundError, EmptyUpdateError
+        ├── errors.py              # DuplicateTaskError, InvalidTransitionError, TaskNotFoundError, EmptyUpdateError, UnknownStatusError
         ├── MODULE.md              # Feature-internal doc: invariants, error-table, conventions
         └── tests/                 # Feature-local unit tests (no FastAPI, no DB)
     └── workflows/                 # Workflow definitions as runtime data (GET/PUT /v1/workflow)
+        ├── domain/                # State/Transition value objects + Workflow definition + events
+        ├── application/           # WorkflowService (validate + strand guard) + DTOs
+        ├── infrastructure/        # Versioned JSON storage + behavior-identical seed + listeners
+        ├── api/v1/                # FastAPI router (mounted under /v1/workflow)
+        ├── interfaces.py          # WorkflowRepositoryInterface ABC + StoredWorkflow
         ├── serialization.py       # Document boundary — collect-all-errors validation
-        ├── domain/                # State/Transition value objects + Workflow definition
-        ├── infrastructure/        # Versioned JSON storage + behavior-identical seed
+        ├── errors.py              # WorkflowValidationError, WorkflowStatesInUseError
+        ├── dependencies.py        # Feature DI providers (repository, service)
         └── MODULE.md              # Feature-internal doc
 tests/
 ├── conftest.py                    # Test fixtures (in-process app, lifespan, fresh DB)
@@ -140,22 +150,22 @@ Enforced by review (not tooling) — see `docs/TIS.md` §1 for the full contract
 4. `api/**` is the only feature-internal place that touches `fastapi`.
 5. `app/core/**` must not import from any individual service.
 
-The dependency arrow always points inward: `api → application → domain ← infrastructure (implements interfaces.py)`. Swapping the repository for Postgres in Phase 2 means editing `infrastructure/` + `interfaces.py` only — `domain/`, `application/`, and `api/` stay untouched.
+The dependency arrow always points inward: `api → application → domain ← infrastructure (implements interfaces.py)`. Swapping the in-memory store for async Postgres (Phase 2) was contained to `infrastructure/` and `interfaces.py`; `domain/` and `application/` stayed intact, widening only to `async`.
 
 ## Assumptions
 
 Carried forward from PRD §10 — these define the operating envelope for Phase 1:
 
 1. **Callers are trusted internal services or developers.** No rate limiting, authentication, captcha, or abuse protection — that arrives in Phase 2 when the service moves beyond the LAN.
-2. **Task data is not sensitive and data loss on restart is acceptable.** Phase 1 uses in-memory SQLite (`sqlite+pysqlite:///:memory:`); tasks disappear when the process or container restarts. Intentional.
-3. **Single instance, single uvicorn worker.** The repository is synchronous; concurrency beyond one worker is out of scope. (Hurl E2E tests must run with `--jobs 1` for the same reason — `StaticPool` serialises on a single shared connection.)
-4. **The team is comfortable with Python 3.13, FastAPI, and `uv`.** No alternative package manager or runtime is supported.
+2. **Task data is not sensitive, but it is now durable.** The service persists to PostgreSQL (`postgresql+asyncpg://…`); tasks survive process and container restarts. The Phase-1 in-memory SQLite store — where data was lost on restart by design — has been retired.
+3. **Multi-worker capable.** The repository is async (async SQLAlchemy over asyncpg) and worker count is set by `WEB_CONCURRENCY` (default 1); Postgres transaction-scoped advisory locks (`pg_advisory_xact_lock`) keep the workflow-vs-status critical section atomic across workers. (Hurl E2E still runs with `--jobs 1`, now only to isolate scenarios that share one database — no longer a storage constraint.)
+4. **The team is comfortable with Python 3.14, FastAPI, and `uv`.** No alternative package manager or runtime is supported.
 
 ## Setup
 
 ### Prerequisites
 
-- Python 3.13+
+- Python 3.14+
 - [`uv`](https://docs.astral.sh/uv/) (the only supported package manager — do not run `pip` directly)
 - Docker + Docker Compose (only required for the container path and Hurl E2E)
 - Hurl 4+ (only required for `make hurl-e2e`; CI pins **8.0.1** — see `.github/workflows/ci.yaml`)
@@ -204,12 +214,12 @@ Tests live at four layers, each chosen to give a _different_ kind of confidence:
 The split rule for unit vs. integration: _can this test run with only my feature module imported?_ Yes → unit test, lives in `app/services/<feature>/tests/`. No (needs the full FastAPI app, real HTTP, or another feature) → cross-boundary, lives in `tests/`.
 
 ```bash
-make all                # lint + typecheck + full pytest suite (~80 tests, 95% coverage; gate at 80%)
+make all                # lint + typecheck + full pytest suite (243 tests, 97% coverage; gate at 80%)
 make test               # full pytest with coverage gate
 make test-unit          # feature-local unit tests only — fast, no FastAPI/DB
-make test-integration   # in-process FastAPI + SQLite :memory:
+make test-integration   # in-process FastAPI + Postgres (testcontainers)
 make test-contract      # repository ABC conformance — parametrised over every impl
-make hurl-e2e           # 13-scenario black-box Hurl suite against the docker-compose container
+make hurl-e2e           # 14-scenario black-box Hurl suite against the docker-compose container
 make schemathesis       # Schemathesis property tests via pytest (ASGI in-process, no container)
 ```
 
@@ -217,7 +227,7 @@ Run a single pytest:
 
 ```bash
 uv run pytest -k test_name
-uv run pytest tests/integration/services/tasks/test_create_task.py::test_create_201
+uv run pytest tests/integration/services/tasks/test_create_task.py::test_create_returns_201_with_envelope
 ```
 
 ### Hurl E2E scenarios
@@ -234,7 +244,7 @@ make hurl-e2e
 # → reports/hurl/report.json (machine-readable)
 ```
 
-`--jobs 1` is hard-coded in the target because in-memory SQLite + `StaticPool` serialises on a single shared connection — parallel scenarios would race on the same in-memory DB. When Phase 2 swaps to Postgres, this constraint lifts.
+`--jobs 1` is hard-coded in the target so scenarios that share one database run sequentially and don't race on each other's rows. (Before Phase 2 this was also a storage constraint — in-memory SQLite + `StaticPool` serialised on one connection — but Postgres now handles concurrent connections, so scenario isolation is the only remaining reason.)
 
 **Run a single scenario standalone.** Useful while authoring a new scenario or debugging an assertion failure. Bring the container up yourself, then point Hurl at one file:
 
@@ -248,25 +258,26 @@ make compose-down                                   # 3. tear down when done
 
 Use `--very-verbose` for full request/response bodies — invaluable when an `[Asserts]` line fails and you need to see what the server actually sent back.
 
-**The 13 scenarios in `tests/hurl/`.**
+**The 14 scenarios in `tests/hurl/`.**
 
-| Scenario                             | What it pins down                                                                                                                                 |
-| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `aaa_sort_priority.hurl`             | Runs first (empty DB); priority sort default + ASC/DESC + tie-break by `created_at` + invalid `order_by` / `order_dir` rejections                 |
-| `healthz.hurl`                       | `GET /healthz` returns 200 (no I/O — process is alive)                                                                                            |
-| `readyz.hurl`                        | `GET /readyz` does a real DB round-trip and returns 200                                                                                           |
-| `request_id_propagation.hurl`        | `X-Request-ID` echoed when caller sends one; generated when absent                                                                                |
-| `task_create.hurl`                   | Happy-path POST                                                                                                                                   |
-| `task_create_validation_errors.hurl` | Each invalid-input shape → 422 with the right code                                                                                                |
-| `task_create_duplicate_title.hurl`   | Case-insensitive + trimmed duplicate detection on CREATE                                                                                          |
-| `task_not_found.hurl`                | 404 envelope shape on GET / PATCH / PUT / DELETE of a missing id                                                                                  |
-| `task_patch_partial.hurl`            | PATCH partial-update semantics; `empty_update` on `{}`                                                                                            |
-| `task_put_full_replace.hurl`         | PUT full-replace semantics                                                                                                                        |
-| `task_lifecycle.hurl`                | One task: `new → in_progress → completed → delete → 404`                                                                                          |
-| `task_list_filter_sort.hurl`         | Sorting, status filter, pagination, limit-validation                                                                                              |
-| `task_full_flow.hurl`                | Multi-task narrative: 4 creates, dup-rejection on create + rename, PATCH/PUT/DELETE, multi-value status filter, error envelopes mid-flow, cleanup |
+| Scenario                             | What it pins down                                                                                                                                                                                                                                                 |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `aaa_sort_priority.hurl`             | Runs first (empty DB); priority sort default + ASC/DESC + tie-break by `created_at` + invalid `order_by` / `order_dir` rejections                                                                                                                                 |
+| `healthz.hurl`                       | `GET /healthz` returns 200 (no I/O — process is alive)                                                                                                                                                                                                            |
+| `readyz.hurl`                        | `GET /readyz` does a real DB round-trip and returns 200                                                                                                                                                                                                           |
+| `request_id_propagation.hurl`        | `X-Request-ID` echoed when caller sends one; generated when absent                                                                                                                                                                                                |
+| `task_create.hurl`                   | Happy-path POST                                                                                                                                                                                                                                                   |
+| `task_create_validation_errors.hurl` | Each invalid-input shape → 422 with the right code                                                                                                                                                                                                                |
+| `task_create_duplicate_title.hurl`   | Case-insensitive + trimmed duplicate detection on CREATE                                                                                                                                                                                                          |
+| `task_not_found.hurl`                | 404 envelope shape on GET / PATCH / PUT / DELETE of a missing id                                                                                                                                                                                                  |
+| `task_patch_partial.hurl`            | PATCH partial-update semantics; `empty_update` on `{}`                                                                                                                                                                                                            |
+| `task_put_full_replace.hurl`         | PUT full-replace semantics                                                                                                                                                                                                                                        |
+| `task_lifecycle.hurl`                | One task: `new → in_progress → completed → delete → 404`                                                                                                                                                                                                          |
+| `task_list_filter_sort.hurl`         | Sorting, status filter, pagination, limit-validation                                                                                                                                                                                                              |
+| `task_full_flow.hurl`                | Multi-task narrative: 4 creates, dup-rejection on create + rename, PATCH/PUT/DELETE, multi-value status filter, error envelopes mid-flow, cleanup                                                                                                                 |
+| `zzz_workflow_admin.hurl`            | Workflow admin + enforcement: seeded GET → invalid PUT (422, all errors at once) → strand guard (409) → restrictive PUT → illegal PATCH (409) → transitions view → legal path to `completed`. Runs last (`zzz_`) since its definition governs later-created tasks |
 
-**Authoring conventions** for new `.hurl` files (so they coexist under `--jobs 1` against the shared in-memory SQLite):
+**Authoring conventions** for new `.hurl` files (so they coexist under `--jobs 1` against the shared Postgres database):
 
 - Use a unique title prefix (e.g. `"hurl flow alpha"`, `"hurl list L1"`) so other scenarios' rows can't collide with yours.
 - Assert presence with `jsonpath "$.items[?(@.title=='…')]" exists` / `not exists` rather than `$.total == N` — other scenarios' rows pad the total count unpredictably.
@@ -312,11 +323,11 @@ APP_ENV=qa LOG_LEVEL=DEBUG uv run uvicorn app.main:app
 
 ## Limitations & roadmap
 
-- **In-memory data loss on restart** — the most visible Phase 1 limitation. Acceptable for the internal MVP; Phase 2 swaps in Postgres.
+- **Durable storage** — ✅ resolved in Phase 2: the service persists to PostgreSQL (async SQLAlchemy + Alembic migrations), so data survives restarts. Phase 1's in-memory SQLite lost data on restart by design.
 - **No auth / authz / rate limits** — the service assumes trusted callers on a private network.
-- **Single worker** — multi-worker deployment is a Phase 2 concern.
+- **Multi-worker** — ✅ resolved in Phase 2: `WEB_CONCURRENCY` drives `uvicorn --workers`, made safe by Postgres advisory-lock guards.
 
-**Phase 2 (planned):** Postgres + async repository, authentication, multi-worker, optional event sinks (outbox / Kafka), and promoting `make schemathesis` from a standalone target into the default CI gate. The application and domain layers stay untouched; only `infrastructure/` and `interfaces.py` widen.
+**Phase 2 (in progress):** shipped a production-hardening slice — security headers, request size/time limits, config-driven CORS, a Prometheus `/metrics` endpoint, CI supply-chain scanning (Dependabot, Trivy, `pip-audit`), and Schemathesis gated in CI — followed by a durability slice: **PostgreSQL + async repository**, **Alembic migrations**, **UUIDv7 IDs**, **Python 3.14**, **`WEB_CONCURRENCY` multi-worker** (advisory-lock-guarded), and **negotiated zstd response compression**. Still ahead: authentication, rate limiting, and optional event sinks (outbox / Kafka). The application and domain layers stayed untouched; only `infrastructure/` and `interfaces.py` widened.
 
 ## Project tooling
 

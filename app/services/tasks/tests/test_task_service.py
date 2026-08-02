@@ -1,5 +1,6 @@
 """Service-layer unit tests for event-firing and workflow-enforcement rules."""
 
+import uuid
 from datetime import UTC, datetime
 from typing import Any
 
@@ -7,7 +8,7 @@ import pytest
 from fastapi import BackgroundTasks
 
 from app.core.constants import OrderDirection
-from app.core.errors import ValidationError
+from app.core.errors import InvalidTransitionError, UnknownStatusError
 from app.core.event_bus import Event, EventBus
 from app.services.tasks.application.service import TaskService
 from app.services.tasks.constants import TaskSortField
@@ -19,11 +20,12 @@ from app.services.tasks.domain.events import (
     TaskUpdated,
 )
 from app.services.tasks.domain.models import Task
-from app.services.tasks.errors import EmptyUpdateError, InvalidTransitionError, TaskNotFoundError
+from app.services.tasks.errors import EmptyUpdateError, TaskNotFoundError
 from app.services.tasks.interfaces import TaskRepositoryInterface
 from app.services.workflows.domain.definition import Workflow
 from app.services.workflows.domain.models import State
 from app.services.workflows.interfaces import StoredWorkflow, WorkflowRepositoryInterface
+from app.services.workflows.serialization import workflow_to_document
 
 
 def _any_to_any() -> Workflow:
@@ -62,19 +64,26 @@ class FakeWorkflowRepo(WorkflowRepositoryInterface):
     def __init__(self, workflow: Workflow) -> None:
         self._workflow = workflow
 
-    def get_active(self) -> StoredWorkflow:
-        return StoredWorkflow(workflow=self._workflow, version=1, created_at=datetime.now(UTC))
+    async def acquire_workflow_guard(self) -> None:
+        return None
 
-    def replace_active(self, workflow: Workflow) -> StoredWorkflow:  # pragma: no cover - never called
+    async def get_active(self) -> StoredWorkflow:
+        return StoredWorkflow(
+            workflow=self._workflow,
+            document=workflow_to_document(self._workflow),
+            version=1,
+            created_at=datetime.now(UTC),
+        )
+
+    async def replace_active(self, workflow: Workflow) -> StoredWorkflow:  # pragma: no cover - never called
         raise AssertionError("not used")
 
 
 class FakeRepo(TaskRepositoryInterface):
     def __init__(self) -> None:
-        self._rows: dict[int, Task] = {}
-        self._next_id = 1
+        self._rows: dict[uuid.UUID, Task] = {}
 
-    def add(
+    async def add(
         self,
         *,
         title: str,
@@ -83,18 +92,16 @@ class FakeRepo(TaskRepositoryInterface):
         priority: int,
     ) -> Task:
         task = Task.from_input(title=title, description=description, status=status, priority=priority)
-        task.id = self._next_id
         self._rows[task.id] = task
-        self._next_id += 1
         return task
 
-    def get(self, task_id: int) -> Task:
+    async def get(self, task_id: uuid.UUID) -> Task:
         try:
             return self._rows[task_id]
         except KeyError as err:
-            raise TaskNotFoundError(details={"id": task_id}) from err
+            raise TaskNotFoundError(details={"id": str(task_id)}) from err
 
-    def list(
+    async def list(
         self,
         *,
         statuses: list[str] | None,
@@ -106,33 +113,33 @@ class FakeRepo(TaskRepositoryInterface):
         rows = list(self._rows.values())
         return rows[offset : offset + limit], len(rows)
 
-    def replace(
+    async def replace(
         self,
-        task_id: int,
+        task_id: uuid.UUID,
         *,
         title: str,
         description: str | None,
         status: str,
         priority: int,
     ) -> tuple[Task, Task]:
-        task = self.get(task_id)
+        task = await self.get(task_id)
         previous = task.snapshot()
         task.apply_replace(title=title, description=description, status=status, priority=priority)
         return previous, task
 
-    def patch(self, task_id: int, **fields: Any) -> tuple[Task, Task]:
-        task = self.get(task_id)
+    async def patch(self, task_id: uuid.UUID, **fields: Any) -> tuple[Task, Task]:
+        task = await self.get(task_id)
         previous = task.snapshot()
         task.apply_patch(fields)
         return previous, task
 
-    def delete(self, task_id: int) -> Task:
-        task = self.get(task_id)
+    async def delete(self, task_id: uuid.UUID) -> Task:
+        task = await self.get(task_id)
         snapshot = task.snapshot()
         del self._rows[task_id]
         return snapshot
 
-    def count_by_status(self) -> dict[str, int]:
+    async def count_by_status(self) -> dict[str, int]:
         counts: dict[str, int] = {}
         for task in self._rows.values():
             counts[task.status] = counts.get(task.status, 0) + 1
@@ -177,7 +184,7 @@ class TestCreate:
     async def test_fires_task_created_carrying_full_row(
         self, service: TaskService, bus: RecordingBus, bt: BackgroundTasks
     ) -> None:
-        await service.create(
+        task = await service.create(
             title="  Alpha  ",
             description="d",
             status="in_progress",
@@ -187,7 +194,7 @@ class TestCreate:
         assert [type(e) for e in bus.published] == [TaskCreated]
         event = bus.published[0]
         assert isinstance(event, TaskCreated)
-        assert event.task.id == 1
+        assert event.task.id == task.id
         assert event.task.title == "Alpha"
         assert event.task.title_key == "alpha"
         assert event.task.description == "d"
@@ -210,10 +217,10 @@ class TestCreate:
         assert exc.value.details == {"from": None, "to": "completed", "allowed": ["new"]}
         assert bus.published == []
 
-    async def test_unknown_status_raises_validation_error(
+    async def test_unknown_status_raises_unknown_status(
         self, strict_service: TaskService, bus: RecordingBus, bt: BackgroundTasks
     ) -> None:
-        with pytest.raises(ValidationError) as exc:
+        with pytest.raises(UnknownStatusError) as exc:
             await strict_service.create(title="a", description=None, status="ghost", priority=1, background_tasks=bt)
         assert exc.value.details == {
             "field": "status",
@@ -225,29 +232,29 @@ class TestCreate:
 
 class TestLegalMoves:
     async def test_returns_task_and_leaving_transitions(self, strict_service: TaskService, bt: BackgroundTasks) -> None:
-        await strict_service.create(title="a", description=None, status=None, priority=1, background_tasks=bt)
+        created = await strict_service.create(title="a", description=None, status=None, priority=1, background_tasks=bt)
 
-        task, transitions = await strict_service.legal_moves(1)
+        task, transitions = await strict_service.legal_moves(created.id)
 
         assert task.status == "new"
         assert [(t.name, t.to_state) for t in transitions] == [("Start work", "in_progress")]
 
     async def test_unknown_id_raises_task_not_found(self, strict_service: TaskService) -> None:
         with pytest.raises(TaskNotFoundError):
-            await strict_service.legal_moves(999)
+            await strict_service.legal_moves(uuid.uuid4())
 
 
 class TestPatch:
     async def test_empty_body_raises_empty_update(self, service: TaskService, bt: BackgroundTasks) -> None:
         with pytest.raises(EmptyUpdateError):
-            await service.patch(1, fields={}, background_tasks=bt)
+            await service.patch(uuid.uuid4(), fields={}, background_tasks=bt)
 
     async def test_no_actual_change_does_not_fire_updated(
         self, service: TaskService, bus: RecordingBus, bt: BackgroundTasks
     ) -> None:
-        await service.create(title="a", description=None, status="new", priority=1, background_tasks=bt)
+        task = await service.create(title="a", description=None, status="new", priority=1, background_tasks=bt)
         bus.published.clear()
-        await service.patch(1, fields={"priority": 1}, background_tasks=bt)
+        await service.patch(task.id, fields={"priority": 1}, background_tasks=bt)
         assert bus.published == []
 
     async def test_same_state_patch_needs_no_transition_and_fires_no_events(
@@ -255,36 +262,36 @@ class TestPatch:
     ) -> None:
         # The strict workflow has no new -> new transition; a same-state write
         # must still succeed as a no-move.
-        await strict_service.create(title="a", description=None, status=None, priority=1, background_tasks=bt)
+        task = await strict_service.create(title="a", description=None, status=None, priority=1, background_tasks=bt)
         bus.published.clear()
-        await strict_service.patch(1, fields={"status": "new"}, background_tasks=bt)
+        await strict_service.patch(task.id, fields={"status": "new"}, background_tasks=bt)
         assert bus.published == []
 
     async def test_illegal_move_raises_invalid_transition_with_allowed_list(
         self, strict_service: TaskService, bus: RecordingBus, bt: BackgroundTasks
     ) -> None:
-        await strict_service.create(title="a", description=None, status=None, priority=1, background_tasks=bt)
+        task = await strict_service.create(title="a", description=None, status=None, priority=1, background_tasks=bt)
         bus.published.clear()
         with pytest.raises(InvalidTransitionError) as exc:
-            await strict_service.patch(1, fields={"status": "completed"}, background_tasks=bt)
+            await strict_service.patch(task.id, fields={"status": "completed"}, background_tasks=bt)
         assert exc.value.details == {"from": "new", "to": "completed", "allowed": ["in_progress"]}
         assert bus.published == []
 
-    async def test_unknown_target_state_raises_validation_error(
+    async def test_unknown_target_state_raises_unknown_status(
         self, strict_service: TaskService, bus: RecordingBus, bt: BackgroundTasks
     ) -> None:
-        await strict_service.create(title="a", description=None, status=None, priority=1, background_tasks=bt)
+        task = await strict_service.create(title="a", description=None, status=None, priority=1, background_tasks=bt)
         bus.published.clear()
-        with pytest.raises(ValidationError):
-            await strict_service.patch(1, fields={"status": "ghost"}, background_tasks=bt)
+        with pytest.raises(UnknownStatusError):
+            await strict_service.patch(task.id, fields={"status": "ghost"}, background_tasks=bt)
         assert bus.published == []
 
     async def test_status_to_in_progress_fires_updated_then_status_changed(
         self, service: TaskService, bus: RecordingBus, bt: BackgroundTasks
     ) -> None:
-        await service.create(title="a", description=None, status="new", priority=1, background_tasks=bt)
+        task = await service.create(title="a", description=None, status="new", priority=1, background_tasks=bt)
         bus.published.clear()
-        await service.patch(1, fields={"status": "in_progress"}, background_tasks=bt)
+        await service.patch(task.id, fields={"status": "in_progress"}, background_tasks=bt)
         assert [type(e) for e in bus.published] == [TaskUpdated, TaskStatusChanged]
         updated, status_changed = bus.published
         assert isinstance(updated, TaskUpdated)
@@ -294,14 +301,14 @@ class TestPatch:
         assert isinstance(status_changed, TaskStatusChanged)
         assert status_changed.from_status == "new"
         assert status_changed.to_status == "in_progress"
-        assert status_changed.task.id == 1
+        assert status_changed.task.id == task.id
 
     async def test_entering_completing_state_fires_three_events_in_order(
         self, service: TaskService, bus: RecordingBus, bt: BackgroundTasks
     ) -> None:
-        await service.create(title="a", description=None, status="new", priority=1, background_tasks=bt)
+        task = await service.create(title="a", description=None, status="new", priority=1, background_tasks=bt)
         bus.published.clear()
-        await service.patch(1, fields={"status": "completed"}, background_tasks=bt)
+        await service.patch(task.id, fields={"status": "completed"}, background_tasks=bt)
         assert [type(e) for e in bus.published] == [TaskUpdated, TaskStatusChanged, TaskCompleted]
         updated, status_changed, completed = bus.published
         assert isinstance(updated, TaskUpdated)
@@ -312,7 +319,7 @@ class TestPatch:
         assert status_changed.from_status == "new"
         assert status_changed.to_status == "completed"
         assert isinstance(completed, TaskCompleted)
-        assert completed.task.id == 1
+        assert completed.task.id == task.id
         assert completed.task.status == "completed"
 
     async def test_entering_non_completing_state_does_not_fire_completed(
@@ -322,19 +329,19 @@ class TestPatch:
         workflow = Workflow(states=[State("open", initial=True), State("done")])
         workflow.allow_transition("Close", from_state="open", to_state="done")
         service = TaskService(repo=repo, workflows=FakeWorkflowRepo(workflow), events=bus)
-        await service.create(title="a", description=None, status=None, priority=1, background_tasks=bt)
+        task = await service.create(title="a", description=None, status=None, priority=1, background_tasks=bt)
         bus.published.clear()
 
-        await service.patch(1, fields={"status": "done"}, background_tasks=bt)
+        await service.patch(task.id, fields={"status": "done"}, background_tasks=bt)
 
         assert [type(e) for e in bus.published] == [TaskUpdated, TaskStatusChanged]
 
     async def test_non_status_change_fires_only_task_updated_with_field_list(
         self, service: TaskService, bus: RecordingBus, bt: BackgroundTasks
     ) -> None:
-        await service.create(title="a", description=None, status="new", priority=1, background_tasks=bt)
+        task = await service.create(title="a", description=None, status="new", priority=1, background_tasks=bt)
         bus.published.clear()
-        await service.patch(1, fields={"priority": 5}, background_tasks=bt)
+        await service.patch(task.id, fields={"priority": 5}, background_tasks=bt)
         assert [type(e) for e in bus.published] == [TaskUpdated]
         updated = bus.published[0]
         assert isinstance(updated, TaskUpdated)
@@ -345,12 +352,12 @@ class TestPatch:
     async def test_multi_field_change_lists_fields_in_canonical_order(
         self, service: TaskService, bus: RecordingBus, bt: BackgroundTasks
     ) -> None:
-        await service.create(title="a", description=None, status="new", priority=1, background_tasks=bt)
+        task = await service.create(title="a", description=None, status="new", priority=1, background_tasks=bt)
         bus.published.clear()
         # MUTABLE_FIELDS order = ("title", "description", "status", "priority").
         # changed_fields must follow this order even if input dict shuffles them.
         await service.patch(
-            1,
+            task.id,
             fields={"priority": 5, "title": "renamed", "description": "d"},
             background_tasks=bt,
         )
@@ -362,7 +369,7 @@ class TestPatch:
         self, service: TaskService, bus: RecordingBus, bt: BackgroundTasks
     ) -> None:
         with pytest.raises(TaskNotFoundError):
-            await service.patch(999, fields={"priority": 5}, background_tasks=bt)
+            await service.patch(uuid.uuid4(), fields={"priority": 5}, background_tasks=bt)
         assert bus.published == []
 
 
@@ -370,9 +377,9 @@ class TestReplace:
     async def test_no_actual_change_does_not_fire_updated(
         self, service: TaskService, bus: RecordingBus, bt: BackgroundTasks
     ) -> None:
-        await service.create(title="a", description="d", status="new", priority=3, background_tasks=bt)
+        task = await service.create(title="a", description="d", status="new", priority=3, background_tasks=bt)
         bus.published.clear()
-        await service.replace(1, title="a", description="d", status="new", priority=3, background_tasks=bt)
+        await service.replace(task.id, title="a", description="d", status="new", priority=3, background_tasks=bt)
         assert bus.published == []
 
     async def test_omitted_status_resolves_to_default_entry_and_move_checks(
@@ -380,21 +387,23 @@ class TestReplace:
     ) -> None:
         # in_progress -> new is not a strict-workflow transition, so a PUT that
         # omits status while the task is mid-flow is a loud 409, not a silent reset.
-        await strict_service.create(title="a", description=None, status=None, priority=1, background_tasks=bt)
-        await strict_service.patch(1, fields={"status": "in_progress"}, background_tasks=bt)
+        task = await strict_service.create(title="a", description=None, status=None, priority=1, background_tasks=bt)
+        await strict_service.patch(task.id, fields={"status": "in_progress"}, background_tasks=bt)
         bus.published.clear()
         with pytest.raises(InvalidTransitionError) as exc:
-            await strict_service.replace(1, title="a", description=None, status=None, priority=1, background_tasks=bt)
+            await strict_service.replace(
+                task.id, title="a", description=None, status=None, priority=1, background_tasks=bt
+            )
         assert exc.value.details == {"from": "in_progress", "to": "new", "allowed": ["completed"]}
         assert bus.published == []
 
     async def test_full_replace_fires_updated_with_all_changed_fields(
         self, service: TaskService, bus: RecordingBus, bt: BackgroundTasks
     ) -> None:
-        await service.create(title="orig", description="d1", status="new", priority=1, background_tasks=bt)
+        task = await service.create(title="orig", description="d1", status="new", priority=1, background_tasks=bt)
         bus.published.clear()
         await service.replace(
-            1,
+            task.id,
             title="renamed",
             description="d2",
             status="in_progress",
@@ -420,9 +429,9 @@ class TestReplace:
     async def test_replace_to_completing_state_fires_all_three_events_in_order(
         self, service: TaskService, bus: RecordingBus, bt: BackgroundTasks
     ) -> None:
-        await service.create(title="a", description=None, status="new", priority=3, background_tasks=bt)
+        task = await service.create(title="a", description=None, status="new", priority=3, background_tasks=bt)
         bus.published.clear()
-        await service.replace(1, title="a", description=None, status="completed", priority=3, background_tasks=bt)
+        await service.replace(task.id, title="a", description=None, status="completed", priority=3, background_tasks=bt)
         assert [type(e) for e in bus.published] == [TaskUpdated, TaskStatusChanged, TaskCompleted]
         completed = bus.published[2]
         assert isinstance(completed, TaskCompleted)
@@ -431,9 +440,9 @@ class TestReplace:
     async def test_replace_non_status_field_only_fires_task_updated(
         self, service: TaskService, bus: RecordingBus, bt: BackgroundTasks
     ) -> None:
-        await service.create(title="a", description=None, status="new", priority=1, background_tasks=bt)
+        task = await service.create(title="a", description=None, status="new", priority=1, background_tasks=bt)
         bus.published.clear()
-        await service.replace(1, title="a", description=None, status="new", priority=5, background_tasks=bt)
+        await service.replace(task.id, title="a", description=None, status="new", priority=5, background_tasks=bt)
         assert [type(e) for e in bus.published] == [TaskUpdated]
         updated = bus.published[0]
         assert isinstance(updated, TaskUpdated)
@@ -442,11 +451,11 @@ class TestReplace:
     async def test_illegal_move_raises_invalid_transition(
         self, strict_service: TaskService, bus: RecordingBus, bt: BackgroundTasks
     ) -> None:
-        await strict_service.create(title="a", description=None, status=None, priority=1, background_tasks=bt)
+        task = await strict_service.create(title="a", description=None, status=None, priority=1, background_tasks=bt)
         bus.published.clear()
         with pytest.raises(InvalidTransitionError):
             await strict_service.replace(
-                1, title="a", description=None, status="completed", priority=1, background_tasks=bt
+                task.id, title="a", description=None, status="completed", priority=1, background_tasks=bt
             )
         assert bus.published == []
 
@@ -454,7 +463,9 @@ class TestReplace:
         self, service: TaskService, bus: RecordingBus, bt: BackgroundTasks
     ) -> None:
         with pytest.raises(TaskNotFoundError):
-            await service.replace(999, title="x", description=None, status="new", priority=1, background_tasks=bt)
+            await service.replace(
+                uuid.uuid4(), title="x", description=None, status="new", priority=1, background_tasks=bt
+            )
         assert bus.published == []
 
 
@@ -462,7 +473,7 @@ class TestDelete:
     async def test_fires_task_deleted_with_detached_snapshot(
         self, service: TaskService, repo: FakeRepo, bus: RecordingBus, bt: BackgroundTasks
     ) -> None:
-        await service.create(
+        task = await service.create(
             title="alpha",
             description="d",
             status="in_progress",
@@ -470,21 +481,21 @@ class TestDelete:
             background_tasks=bt,
         )
         bus.published.clear()
-        await service.delete(1, background_tasks=bt)
+        await service.delete(task.id, background_tasks=bt)
         assert [type(e) for e in bus.published] == [TaskDeleted]
         event = bus.published[0]
         assert isinstance(event, TaskDeleted)
-        assert event.task.id == 1
+        assert event.task.id == task.id
         assert event.task.title == "alpha"
         assert event.task.description == "d"
         assert event.task.status == "in_progress"
         assert event.task.priority == 4
         # Snapshot must survive row deletion — the row is gone but the event still carries its data.
-        assert 1 not in repo._rows  # pyright: ignore[reportPrivateUsage]
+        assert task.id not in repo._rows  # pyright: ignore[reportPrivateUsage]
 
     async def test_unknown_id_raises_task_not_found(
         self, service: TaskService, bus: RecordingBus, bt: BackgroundTasks
     ) -> None:
         with pytest.raises(TaskNotFoundError):
-            await service.delete(999, background_tasks=bt)
+            await service.delete(uuid.uuid4(), background_tasks=bt)
         assert bus.published == []

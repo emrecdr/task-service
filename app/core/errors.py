@@ -7,6 +7,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.exception_handlers import http_exception_handler as default_http_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
+from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.core.config import settings
@@ -20,8 +21,11 @@ class ErrorCode(StrEnum):
     DUPLICATE_TASK = "duplicate_task"
     TASK_NOT_FOUND = "task_not_found"
     INVALID_TRANSITION = "invalid_transition"
+    UNKNOWN_STATUS = "unknown_status"
     INVALID_WORKFLOW_DEFINITION = "invalid_workflow_definition"
     WORKFLOW_STATES_IN_USE = "workflow_states_in_use"
+    PAYLOAD_TOO_LARGE = "payload_too_large"
+    REQUEST_TIMEOUT = "request_timeout"
     INTERNAL_ERROR = "internal_error"
 
 
@@ -62,10 +66,43 @@ class ReadOnlyFieldError(ValidationError):
     detail = "Field is server-managed and cannot be set by the caller."
 
 
+class InvalidTransitionError(ConflictError):
+    """A status move the active workflow does not permit. Cross-cutting workflow-enforcement
+    error (like ``ReadOnlyFieldError``): raised by ``WorkflowEngine`` so any status-governed
+    feature surfaces the same envelope; the domain engine may not import a feature ``errors.py``."""
+
+    error_code = ErrorCode.INVALID_TRANSITION
+    detail = "The active workflow does not allow this move."
+
+
+class UnknownStatusError(ValidationError):
+    """A status that is no state of the active workflow. Raised by ``WorkflowEngine``; see
+    ``InvalidTransitionError`` for why these enforcement errors live in core, not the feature."""
+
+    error_code = ErrorCode.UNKNOWN_STATUS
+    detail = "Unknown workflow state."
+
+
 _SERVER_OWNED_FIELDS: Final[frozenset[str]] = frozenset({"id", "created_at"})
 
 
-def _envelope(
+class ErrorDetail(BaseModel):
+    """The ``error`` object carried by every non-2xx response (FRD §4)."""
+
+    code: str
+    message: str
+    details: dict[str, Any]
+    request_id: str | None
+
+
+class ErrorEnvelope(BaseModel):
+    """The single response shape for every failure — the one source of truth for the error
+    contract, produced at runtime by ``build_error_response`` and documented on every error response."""
+
+    error: ErrorDetail
+
+
+def build_error_response(
     *,
     request: Request,
     code: ErrorCode,
@@ -73,24 +110,28 @@ def _envelope(
     details: dict[str, Any],
     status_code: int,
 ) -> JSONResponse:
-    return JSONResponse(
-        status_code=status_code,
-        content={
-            "error": {
-                "code": str(code),
-                "message": message,
-                "details": details,
-                "request_id": getattr(request.state, "request_id", None),
-            }
-        },
+    """Render the canonical error envelope as a ``JSONResponse``.
+
+    The single seam every failure path funnels through — global exception
+    handlers and request-hardening middleware alike — so the wire shape stays
+    identical to the documented ``ErrorEnvelope`` regardless of origin.
+    """
+    envelope = ErrorEnvelope(
+        error=ErrorDetail(
+            code=str(code),
+            message=message,
+            details=details,
+            request_id=getattr(request.state, "request_id", None),
+        )
     )
+    return JSONResponse(status_code=status_code, content=envelope.model_dump())
 
 
 def _envelope_from_app_error(request: Request, exc: AppError) -> JSONResponse:
     details = dict(exc.details)
     if settings.expose_stack_traces and exc.original_error is not None:
         details["cause"] = f"{type(exc.original_error).__name__}: {exc.original_error}"
-    return _envelope(
+    return build_error_response(
         request=request,
         code=exc.error_code,
         message=exc.detail,
@@ -109,7 +150,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         # Re-wrap Starlette's 400 (malformed body) as a 422 validation_error envelope;
         # delegate all other HTTPExceptions so framework headers (e.g. 405 Allow) survive.
         if exc.status_code == status.HTTP_400_BAD_REQUEST:
-            return _envelope(
+            return build_error_response(
                 request=request,
                 code=ErrorCode.VALIDATION_ERROR,
                 message=str(exc.detail) if exc.detail else "Request body is not valid JSON.",
@@ -130,7 +171,7 @@ def register_exception_handlers(app: FastAPI) -> None:
                     request,
                     ReadOnlyFieldError(details={"field": loc[-1]}),
                 )
-        return _envelope(
+        return build_error_response(
             request=request,
             code=ErrorCode.VALIDATION_ERROR,
             message="Request validation failed.",

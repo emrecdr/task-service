@@ -17,10 +17,12 @@ and versioning the definitions themselves.
 
 Ported from the `arjan/src/workflow` reference design: immutable value
 objects with an open `meta` extension model, an encapsulated definition
-class, and a collect-all-errors document boundary. The reference's
-`WorkflowEngine` was deliberately **not** ported — `TaskService` is the
-transactional executor and the `EventBus` already provides the observer
-seam.
+class, and a collect-all-errors document boundary. `WorkflowEngine`
+(`domain/engine.py`) applies an active definition's rules — entry
+resolution, move legality, completion — so any status-governed feature
+(tasks today) drives one engine instead of re-deriving the taxonomy;
+`TaskService` remains the transactional executor and the `EventBus` the
+observer seam.
 
 ## Model
 
@@ -40,8 +42,9 @@ seam.
   first `initial` one) is the `default_entry`.
 - Every key that is not a core field is **meta** — it travels with the
   definition, round-trips untouched, and the workflow machinery never
-  interprets it. The tasks feature reads exactly one meta key:
-  `"completes": true` fires `TaskCompleted` (`COMPLETES_META_KEY`).
+  interprets it. The engine reads exactly one meta key: `"completes": true`
+  (`COMPLETES_META_KEY`) marks completion, which the tasks feature reacts to
+  by firing `TaskCompleted`.
 - Unknown **top-level** keys are rejected — that is also what rejects the
   server-owned `version`/`created_at` in `PUT` bodies.
 
@@ -56,7 +59,7 @@ layers.
 ## Storage
 
 `workflow_definitions` table, **append-only**: each `PUT` inserts an
-immutable row (`version = max+1`, JSON `document`, `created_at`); the active
+immutable row (`version = max+1`, JSONB `document`, `created_at`); the active
 definition is the highest version. Rollback = re-`PUT` an older document.
 `infrastructure/seed.py` writes the behavior-identical default (any → any
 over `new`/`in_progress`/`completed`) when the table is empty — called from
@@ -74,7 +77,11 @@ All under `settings.api_prefix` (default `/v1`):
 The **strand guard**: a definition that would leave existing tasks in states
 it no longer defines is rejected with 409 `workflow_states_in_use`, listing
 each offending state with its live task count. The usage-count → check →
-commit span is await-free, so no concurrent task write can interleave.
+commit span is serialised by a Postgres transaction-scoped advisory lock
+(`pg_advisory_xact_lock`, acquired via `acquire_workflow_guard()` as the
+critical section's first db op and released at the span's single commit), so
+no concurrent status-changing task write or workflow replace can interleave —
+a guarantee that now holds across multiple workers.
 
 ## Errors (FRD §4)
 
@@ -83,24 +90,27 @@ commit span is await-free, so no concurrent task write can interleave.
 | `WorkflowValidationError`  | 422    | `invalid_workflow_definition` |
 | `WorkflowStatesInUseError` | 409    | `workflow_states_in_use`      |
 
-`InvalidTransitionError` (409 `invalid_transition`) lives in the **tasks**
-feature — tasks are the enforcement point; this feature only defines what is
-legal.
+`WorkflowEngine` raises `InvalidTransitionError` (409 `invalid_transition`)
+and `UnknownStatusError` (422 `unknown_status`); both live in
+`app/core/errors.py` — a domain engine may not import a feature `errors.py`,
+so they sit in core alongside the other cross-cutting enforcement error,
+`ReadOnlyFieldError`.
 
 ## Layering
 
 ```
 api/            ← GET/PUT /v1/workflow router
 application/    ← WorkflowService (validate → strand guard → store) + WorkflowResponse
-domain/         ← State/Transition value objects, Workflow definition, WorkflowUpdated
-infrastructure/ ← WorkflowRecord (JSON column) + repository, seed, log listener
-interfaces.py   ← WorkflowRepositoryInterface ABC + StoredWorkflow
+domain/         ← State/Transition value objects, Workflow definition, WorkflowEngine, WorkflowUpdated
+infrastructure/ ← WorkflowRecord (JSONB column) + repository, seed, log listener
+interfaces.py   ← WorkflowRepositoryInterface + StatusUsagePort ABCs + StoredWorkflow
 serialization.py← document boundary (feature root: shared by HTTP, storage, seed)
 errors.py       ← feature-typed exceptions, inheriting from app.core.errors
-dependencies.py ← DI wiring; injects the tasks repository for the strand guard
+dependencies.py ← DI wiring; adapts the tasks repository to StatusUsagePort for the strand guard
 ```
 
-Cross-feature seam: `WorkflowService` receives `TaskRepositoryInterface`
-(for `count_by_status`) and `TaskService` receives
-`WorkflowRepositoryInterface` — owning-repo injection both ways, acyclic at
-the interfaces layer, both repositories built from the same request session.
+Cross-feature seam: `WorkflowService` receives the narrow `StatusUsagePort`
+(only `count_by_status`, adapted from the tasks repository in
+`dependencies.py`) and `TaskService` drives a `WorkflowEngine` built from the
+active definition — acyclic at the interfaces layer, both repositories built
+from the same request session.

@@ -1,24 +1,34 @@
-from typing import Any, Final
+import uuid
+from typing import Any
 
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
-from sqlmodel import Session, col, select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import col, select
 
 from app.core.constants import OrderDirection
-from app.services.tasks.constants import TaskSortField
-from app.services.tasks.domain.models import MUTABLE_FIELDS, Task
+from app.services.tasks.constants import TITLE_KEY_CONSTRAINT, TaskSortField
+from app.services.tasks.domain.models import Task
 from app.services.tasks.errors import DuplicateTaskError, TaskNotFoundError
 from app.services.tasks.interfaces import TaskRepositoryInterface
 
-# Fragment of the SQLite UNIQUE-violation message identifying the ``title_key`` index.
-_TITLE_KEY_INDEX_FRAGMENT: Final[str] = "title_key"
+
+def _is_title_key_violation(err: IntegrityError) -> bool:
+    # Match asyncpg's ``UniqueViolationError.constraint_name`` against the named constraint
+    # (``Task.__table_args__``) — a dialect-stable check, not error-message parsing.
+    cause = err.orig.__cause__ if err.orig is not None else None
+    constraint = getattr(cause, "constraint_name", None)
+    if constraint is not None:
+        return constraint == TITLE_KEY_CONSTRAINT
+    # Fallback for drivers that don't expose the constraint name on the exception.
+    return TITLE_KEY_CONSTRAINT in str(err.orig)
 
 
 class SQLModelTaskRepository(TaskRepositoryInterface):
-    def __init__(self, session: Session) -> None:
+    def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    def add(
+    async def add(
         self,
         *,
         title: str,
@@ -33,16 +43,16 @@ class SQLModelTaskRepository(TaskRepositoryInterface):
             priority=priority,
         )
         self._session.add(task)
-        self._commit_or_translate(title)
+        await self._commit_or_translate(title)
         return task
 
-    def get(self, task_id: int) -> Task:
-        task = self._session.get(Task, task_id)
+    async def get(self, task_id: uuid.UUID) -> Task:
+        task = await self._session.get(Task, task_id)
         if task is None:
-            raise TaskNotFoundError(details={"id": task_id})
+            raise TaskNotFoundError(details={"id": str(task_id)})
         return task
 
-    def list(
+    async def list(
         self,
         *,
         statuses: list[str] | None,
@@ -62,50 +72,51 @@ class SQLModelTaskRepository(TaskRepositoryInterface):
         ordered = sort_col.desc() if order_dir is OrderDirection.DESC else sort_col.asc()
         items_stmt = base.order_by(ordered, col(Task.created_at).asc()).offset(offset).limit(limit)
 
-        items = list(self._session.scalars(items_stmt).all())
-        total = int(self._session.scalar(count_stmt) or 0)
+        items = list((await self._session.scalars(items_stmt)).all())
+        total = int(await self._session.scalar(count_stmt) or 0)
         return items, total
 
-    def replace(
+    async def replace(
         self,
-        task_id: int,
+        task_id: uuid.UUID,
         *,
         title: str,
         description: str | None,
         status: str,
         priority: int,
     ) -> tuple[Task, Task]:
-        task = self.get(task_id)
+        task = await self.get(task_id)
         previous = task.snapshot()
         task.apply_replace(title=title, description=description, status=status, priority=priority)
-        self._commit_or_translate(title)
+        await self._commit_or_translate(title)
         return previous, task
 
-    def patch(self, task_id: int, **fields: Any) -> tuple[Task, Task]:
-        task = self.get(task_id)
+    async def patch(self, task_id: uuid.UUID, **fields: Any) -> tuple[Task, Task]:
+        task = await self.get(task_id)
         previous = task.snapshot()
         task.apply_patch(fields)
-        if any(getattr(task, f) != getattr(previous, f) for f in MUTABLE_FIELDS):
-            self._commit_or_translate(task.title)
+        if task.changed_fields(previous):
+            await self._commit_or_translate(task.title)
         return previous, task
 
-    def delete(self, task_id: int) -> Task:
-        task = self.get(task_id)
+    async def delete(self, task_id: uuid.UUID) -> Task:
+        task = await self.get(task_id)
         snapshot = task.snapshot()
-        self._session.delete(task)
-        self._session.commit()
+        await self._session.delete(task)
+        await self._session.commit()
         return snapshot
 
-    def count_by_status(self) -> dict[str, int]:
-        rows = self._session.exec(select(col(Task.status), func.count()).group_by(col(Task.status))).all()
-        return dict(rows)
+    async def count_by_status(self) -> dict[str, int]:
+        stmt = select(col(Task.status), func.count()).group_by(col(Task.status))
+        rows = (await self._session.execute(stmt)).all()
+        return {str(row[0]): int(row[1]) for row in rows}
 
-    def _commit_or_translate(self, title: str) -> None:
+    async def _commit_or_translate(self, title: str) -> None:
         """Commit; translate a ``title_key`` UNIQUE violation into ``DuplicateTaskError``."""
         try:
-            self._session.commit()
+            await self._session.commit()
         except IntegrityError as err:
-            self._session.rollback()
-            if _TITLE_KEY_INDEX_FRAGMENT in str(err.orig):
+            await self._session.rollback()
+            if _is_title_key_violation(err):
                 raise DuplicateTaskError(details={"title": title}, original_error=err) from err
             raise

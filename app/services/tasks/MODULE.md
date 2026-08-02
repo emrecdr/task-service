@@ -23,15 +23,15 @@ separate ORM/domain split (TIS §4.1 Decision callout).
 
 **Key fields:**
 
-| field         | type            | notes                                                            |
-| ------------- | --------------- | ---------------------------------------------------------------- |
-| `id`          | `int` PK        | server-owned; PUT/PATCH bodies containing `id` are rejected      |
-| `title`       | `str` 1..200    | preserved verbatim for display                                   |
-| `title_key`   | `str` UNIQUE    | canonical uniqueness key = `title.strip().casefold()` (FRD §2.4) |
-| `description` | `str` 0..2000   | optional                                                         |
-| `status`      | `str`           | a state of the **active workflow definition** (seed: `new`, `in_progress`, `completed`) |
-| `priority`    | `int` 1..5      |                                                                  |
-| `created_at`  | `datetime UTC`  | server-owned; aware datetime; RFC 3339 with `Z` suffix on wire   |
+| field         | type                    | notes                                                            |
+| ------------- | ----------------------- | ---------------------------------------------------------------- |
+| `id`          | `uuid.UUID` PK (UUIDv7) | server-owned; PUT/PATCH bodies containing `id` are rejected      |
+| `title`       | `str` 1..200            | preserved verbatim for display                                   |
+| `title_key`   | `str` UNIQUE            | canonical uniqueness key = `title.strip().casefold()` (FRD §2.4) |
+| `description` | `str` 0..2000           | optional                                                         |
+| `status`      | `str`                   | a state of the **active workflow definition** (seed: `new`, `in_progress`, `completed`) |
+| `priority`    | `int` 1..5              |                                                                  |
+| `created_at`  | `datetime UTC`          | server-owned; aware datetime; RFC 3339 with `Z` suffix on wire   |
 
 **Domain invariants:**
 
@@ -46,11 +46,12 @@ separate ORM/domain split (TIS §4.1 Decision callout).
 
 Task states are **runtime data** owned by the active workflow definition
 (`app/services/workflows/`, `GET/PUT /v1/workflow`) — there is deliberately no
-status enum. The service enforces the definition's transition table on every
-status change; the shipped seed is behavior-identical to the original
-any → any contract. The state-meta flag this feature reads to fire `TaskCompleted` is
-`COMPLETES_META_KEY`, defined with the document vocabulary in
-`workflows/domain/models.py`.
+status enum. The service drives a `WorkflowEngine` (built from the active
+definition) that enforces the transition table on every status change; the
+shipped seed is behavior-identical to the original any → any contract. The
+state-meta flag that fires `TaskCompleted` is `COMPLETES_META_KEY`, which the
+engine reports via `completes()` and this feature reacts to; it is defined
+with the document vocabulary in `workflows/domain/models.py`.
 
 ## Events (FRD §5.1)
 
@@ -67,9 +68,10 @@ HTTP response:
 | `TaskDeleted`        | after a successful `DELETE`, carrying the pre-delete snapshot |
 
 Mutable fields (`{"title", "description", "status", "priority"}`) are the
-single source of truth in `domain/models.py::MUTABLE_FIELDS` — the service
-imports it for change-detection and `Task.patch()` imports it for patch-dict
-validation. The repository stays out of mutability enforcement (domain
+single source of truth in `domain/models.py::MUTABLE_FIELDS`. `Task.changed_fields()`
+derives the changed set from it — the repository gates its commit on that method
+and the service gates event fan-out on it — while `Task.apply_patch()` uses it for
+patch-dict validation. The repository stays out of mutability enforcement (domain
 concern).
 
 ## Errors (FRD §4)
@@ -82,13 +84,17 @@ envelope and surfaces as 500.
 | exception              | status | `error.code`        |
 | ---------------------- | ------ | ------------------- |
 | `DuplicateTaskError`   | 409    | `duplicate_task`    |
-| `InvalidTransitionError` | 409  | `invalid_transition` |
 | `TaskNotFoundError`    | 404    | `task_not_found`    |
 | `EmptyUpdateError`     | 422    | `empty_update`      |
 
 `read_only_field` (422) is emitted by the core handler when the request body
 sets a server-managed field (`id`, `created_at`); the exception class
 (`ReadOnlyFieldError`) lives in `app.core.errors`, not this feature.
+
+`invalid_transition` (409) and `unknown_status` (422) surface on the write
+endpoints but are raised by `WorkflowEngine`; their classes
+(`InvalidTransitionError`, `UnknownStatusError`) also live in
+`app.core.errors`, not this feature.
 
 ## Endpoints
 
@@ -112,7 +118,7 @@ Feature is hexagonal-internal (see `CLAUDE.md` for the full rule):
 
 ```
 api/        ← FastAPI routes; only place that imports fastapi inside the feature
-application/← TaskService + DTOs; depends on domain/, interfaces.py, and workflows' interfaces (enforcement seam)
+application/← TaskService + DTOs; depends on domain/, interfaces.py, and the workflows WorkflowEngine + interfaces (enforcement seam)
 domain/     ← Task entity + events + MUTABLE_FIELDS; pure data + invariants
 infrastructure/ ← SQLModelTaskRepository + log_event listener
 interfaces.py   ← TaskRepositoryInterface ABC (TaskSortField enum in constants.py)

@@ -33,8 +33,12 @@ def default_workflow() -> Workflow:
     return workflow
 
 
-def seed_workflow_if_missing() -> None:
-    """Idempotent: called from both app lifespan and the test schema reset."""
-    with session_factory() as session:
-        if session.scalar(select(col(WorkflowRecord.id)).limit(1)) is None:
-            SQLModelWorkflowRepository(session).replace_active(default_workflow())
+async def seed_workflow_if_missing() -> None:
+    """Idempotent and multi-worker-safe: the advisory guard serialises concurrent
+    workers so exactly one inserts version 1 (the rest see it present and skip).
+    Called from both the app lifespan and the test schema reset."""
+    async with session_factory() as session:
+        repo = SQLModelWorkflowRepository(session)
+        await repo.acquire_workflow_guard()
+        if await session.scalar(select(col(WorkflowRecord.id)).limit(1)) is None:
+            await repo.replace_active(default_workflow())

@@ -37,7 +37,7 @@ Content-Type: application/json
 { "title": "hurl validation status", "priority": 3, "status": "shipped" }
 HTTP 422
 [Asserts]
-jsonpath "$.error.code" == "validation_error"
+jsonpath "$.error.code" == "unknown_status"
 
 # Client supplies server-owned id → 422 read_only_field (extra="forbid").
 POST {{base_url}}/v1/tasks

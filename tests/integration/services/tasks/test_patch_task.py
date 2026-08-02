@@ -119,7 +119,7 @@ async def test_patch_rejects_server_owned_created_at(client: AsyncClient, create
 
 
 async def test_patch_unknown_id_returns_404(client: AsyncClient) -> None:
-    r = await client.patch("/v1/tasks/99999", json={"priority": 5})
+    r = await client.patch("/v1/tasks/00000000-0000-0000-0000-000000000000", json={"priority": 5})
     assert_error(r, 404, ErrorCode.TASK_NOT_FOUND)
 
 

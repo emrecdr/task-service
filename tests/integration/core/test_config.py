@@ -43,3 +43,36 @@ def test_settings_api_prefix_validation() -> None:
 
     with pytest.raises(ValidationError, match="must not end with '/'"):
         Settings(api_prefix="/v1/")
+
+
+def test_settings_request_hardening_validation() -> None:
+    settings = Settings(max_request_body_bytes=2048, request_timeout_seconds=15.0)
+    assert settings.max_request_body_bytes == 2048
+    assert settings.request_timeout_seconds == 15.0
+
+    with pytest.raises(ValidationError, match="greater than 0"):
+        Settings(max_request_body_bytes=0)
+
+    with pytest.raises(ValidationError, match="greater than 0"):
+        Settings(request_timeout_seconds=0)
+
+
+def test_settings_db_pool_validation() -> None:
+    settings = Settings(db_pool_size=20, db_max_overflow=30, db_pool_recycle_seconds=1800)
+    assert settings.db_pool_size == 20
+    assert settings.db_max_overflow == 30
+    assert settings.db_pool_recycle_seconds == 1800
+
+    # Defaults mirror SQLAlchemy's QueuePool defaults (recycle -1 = disabled), so the
+    # knobs are additive — unset behaviour is identical to before they existed.
+    defaults = Settings()
+    assert defaults.db_pool_size == 5
+    assert defaults.db_max_overflow == 10
+    assert defaults.db_pool_recycle_seconds == -1
+
+    with pytest.raises(ValidationError, match="greater than or equal to 1"):
+        Settings(db_pool_size=0)
+    with pytest.raises(ValidationError, match="greater than or equal to 0"):
+        Settings(db_max_overflow=-1)
+    with pytest.raises(ValidationError, match="greater than or equal to -1"):
+        Settings(db_pool_recycle_seconds=-2)

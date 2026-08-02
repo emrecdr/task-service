@@ -10,7 +10,7 @@ HTTP 201
 [Captures]
 task_id: jsonpath "$.id"
 [Asserts]
-jsonpath "$.id" isInteger
+jsonpath "$.id" isString
 jsonpath "$.title" == "hurl create A"
 jsonpath "$.description" == "first hurl-created task"
 jsonpath "$.status" == "new"

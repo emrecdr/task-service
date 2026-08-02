@@ -1,12 +1,14 @@
+import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, Path, status
 
-from app.core.constants import INT64_MAX, INT64_MIN
 from app.core.openapi_responses import (
     CONFLICT_RESPONSE,
     NOT_FOUND_RESPONSE,
+    PATCH_VALIDATION_RESPONSE,
     VALIDATION_RESPONSE,
+    WRITE_VALIDATION_RESPONSE,
 )
 from app.services.tasks.application.dto import (
     TaskCreate,
@@ -18,7 +20,7 @@ from app.services.tasks.application.dto import (
 from app.services.tasks.dependencies import TaskQueryParamsDep, TaskServiceDep
 from app.services.tasks.domain.models import Task
 
-TaskIdPath = Annotated[int, Path(ge=INT64_MIN, le=INT64_MAX, json_schema_extra={"format": "int64"})]
+TaskIdPath = Annotated[uuid.UUID, Path()]
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -32,7 +34,7 @@ router = APIRouter(prefix="/tasks", tags=["tasks"])
     response_model=TaskResponse,
     responses={
         409: CONFLICT_RESPONSE,
-        422: VALIDATION_RESPONSE,
+        422: WRITE_VALIDATION_RESPONSE,
     },
 )
 async def create_task(
@@ -74,7 +76,10 @@ async def list_tasks(
 @router.get(
     "/{task_id}",
     response_model=TaskResponse,
-    responses={404: NOT_FOUND_RESPONSE},
+    responses={
+        404: NOT_FOUND_RESPONSE,
+        422: VALIDATION_RESPONSE,
+    },
 )
 async def get_task(
     task_id: TaskIdPath,
@@ -90,7 +95,10 @@ async def get_task(
 @router.get(
     "/{task_id}/transitions",
     response_model=TaskTransitionsResponse,
-    responses={404: NOT_FOUND_RESPONSE},
+    responses={
+        404: NOT_FOUND_RESPONSE,
+        422: VALIDATION_RESPONSE,
+    },
 )
 async def task_transitions(
     task_id: TaskIdPath,
@@ -116,7 +124,7 @@ async def task_transitions(
     responses={
         404: NOT_FOUND_RESPONSE,
         409: CONFLICT_RESPONSE,
-        422: VALIDATION_RESPONSE,
+        422: WRITE_VALIDATION_RESPONSE,
     },
 )
 async def replace_task(
@@ -138,7 +146,7 @@ async def replace_task(
     responses={
         404: NOT_FOUND_RESPONSE,
         409: CONFLICT_RESPONSE,
-        422: VALIDATION_RESPONSE,
+        422: PATCH_VALIDATION_RESPONSE,
     },
 )
 async def patch_task(
@@ -161,7 +169,10 @@ async def patch_task(
 @router.delete(
     "/{task_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    responses={404: NOT_FOUND_RESPONSE},
+    responses={
+        404: NOT_FOUND_RESPONSE,
+        422: VALIDATION_RESPONSE,
+    },
 )
 async def delete_task(
     task_id: TaskIdPath,

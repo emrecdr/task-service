@@ -2,7 +2,7 @@
 
 ## Language & Runtime
 
-- Python 3.13+
+- Python 3.14+
 - FastAPI with Pydantic v2 for validation
 - SQLModel for ORM / database models
 - `uv` as package manager (never `pip`)

@@ -11,6 +11,7 @@ app/services/*/tests
 docs
 reports
 docker
+!docker/entrypoint.sh
 Makefile
 
 # Coverage / build artefacts

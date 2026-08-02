@@ -6,15 +6,19 @@ build-backend = "hatchling.build"
 name = "task-service"
 dynamic = ["version"]
 description = "Task Service."
-requires-python = ">=3.13"
+requires-python = ">=3.14"
 dependencies = [
-    "fastapi>=0.110",
-    "uvicorn[standard]>=0.30",
-    "sqlmodel>=0.0.27",
-    "pydantic[email]>=2.5",
+    "fastapi>=0.128.1",
+    "uvicorn[standard]>=0.38",
+    "sqlmodel>=0.0.39",
+    "sqlalchemy[asyncio]>=2.0.51",
+    "asyncpg>=0.31",
+    "alembic>=1.13",
+    "pydantic>=2.13",
     "pydantic-settings>=2.1",
     "structlog>=25.0",
     "python-dotenv>=1.2.2",
+    "prometheus-fastapi-instrumentator>=7.0",
 ]
 
 [dependency-groups]
@@ -23,11 +27,13 @@ dev = [
     "pytest-asyncio>=0.23",
     "pytest-cov>=4.1",
     "httpx>=0.27",
+    "testcontainers[postgresql]>=4.0",
     "ruff>=0.6",
     "bandit[toml]>=1.7",
     "pre-commit>=4.0",
     "schemathesis>=3.30",
     "pyright>=1.1.411",
+    "pip-audit>=2.10.1",
 ]
 
 [tool.hatch.version]
@@ -44,7 +50,7 @@ severity = "medium"
 [tool.ruff]
 line-length = 120
 indent-width = 4
-target-version = "py313"
+target-version = "py314"
 src = ["app", "tests"] # Explicitly include app and tests
 fix = true
 exclude = [
@@ -86,13 +92,17 @@ ignore = [
 
 [tool.pyright]
 include = ["app", "tests"]
-pythonVersion = "3.13"
+pythonVersion = "3.14"
 typeCheckingMode = "strict"
 venvPath = "."
 venv = ".venv"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# One shared event loop so async fixtures and tests share a greenlet context
+# (a repo/session yielded by a fixture is used in the test without MissingGreenlet).
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
 testpaths = ["app/services", "tests"]
 python_files = ["test_*.py"]
 addopts = "--import-mode=importlib --cov=app --cov-report=term --cov-fail-under=80 -m 'not e2e'"

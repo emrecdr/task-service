@@ -23,7 +23,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-This is **Phase 1 scaffold**. The runtime code under `app/` and `tests/` is currently empty — the locked design lives in `docs/PRD.md`, `docs/FRD.md`, and `docs/TIS.md`. When implementing, treat those three documents as the source of truth (TIS for code shape, FRD for contracts, PRD for scope). `docs/Python_Assignment.pdf` is the original brief.
+Phase 1 (the internal MVP) is fully implemented and green; **Phase 2 is in progress** — a production-hardening slice (security headers, request limits, CORS, `/metrics`, CI supply-chain) plus a **durability slice** (PostgreSQL + async SQLAlchemy over asyncpg, Alembic migrations, UUIDv7 IDs, Python 3.14, `pg_advisory_xact_lock` atomicity, `WEB_CONCURRENCY` multi-worker, zstd response compression). The locked design lives in `docs/PRD.md`, `docs/FRD.md`, and `docs/TIS.md` — treat those three as the source of truth (TIS for code shape, FRD for contracts, PRD for scope). `docs/Python_Assignment.pdf` is the original brief.
 
 ## Code cleanliness
 
@@ -40,7 +40,7 @@ This is **Phase 1 scaffold**. The runtime code under `app/` and `tests/` is curr
 - **Early returns, flat > nested.** Validate inputs at function start, raise/return immediately on failure. Cap nesting at 2–3 levels; if you exceed it, extract a helper.
 - **One Obvious Way.** No multiple ways to do the same thing, no convenience aliases, no alternative input formats — if the contract says JSON array, reject comma-separated. Use framework defaults (Pydantic/FastAPI) instead of custom parsing.
 - **Naming.** `snake_case` for functions/vars, `CamelCase` for classes, `UPPER_SNAKE_CASE` for constants.
-- **Async vs sync.** Routes and service-layer methods are `async def`; the SQLModel repository is synchronous in Phase 1 (SQLite single-process).
+- **Async everywhere.** Routes, service-layer methods, and the SQLModel repository are all `async def` (async SQLAlchemy over asyncpg). `.add()` stays sync; every `.get/.scalar/.exec/.commit/.rollback/.delete` is awaited.
 
 ## Always validate after changes
 
@@ -53,7 +53,7 @@ For wider sweeps before declaring done: `uv run ruff check . && uv run ruff form
 
 ## Tooling and commands
 
-Project is managed by **uv** (Python 3.13). Always run commands through `uv run` so the project virtualenv is used. **Never use `pip` directly. Never activate the venv manually** (`source .venv/bin/activate`) — `uv run` handles it.
+Project is managed by **uv** (Python 3.14). Always run commands through `uv run` so the project virtualenv is used. **Never use `pip` directly. Never activate the venv manually** (`source .venv/bin/activate`) — `uv run` handles it.
 
 ```
 uv sync                                  # install runtime + dev deps from uv.lock
@@ -62,7 +62,7 @@ uv run uvicorn app.main:app --reload     # local dev server (when app/main.py ex
 
 uv run pytest                            # full test run with coverage gate (--cov-fail-under=80)
 uv run pytest app/services/tasks/tests   # unit tests only (fast, no FastAPI/DB)
-uv run pytest tests/integration          # integration (in-process FastAPI + SQLite :memory:)
+uv run pytest tests/integration          # integration (in-process FastAPI + Postgres via testcontainers)
 uv run pytest tests/contract             # repository ABC conformance, parametrized over impls
 uv run pytest -k test_name               # single test by substring
 uv run pytest path/to/test_file.py::test_fn
@@ -99,7 +99,7 @@ The `Task` SQLModel row **is** the domain entity (`table=True`). There is no sep
 ## Key conventions
 
 - **Uniqueness key.** `Task.title_key = title.strip().casefold()` is the canonical unique column; `title` is preserved verbatim for display. Duplicate-title detection always goes through `title_key`, never `title`.
-- **Workflow-governed status.** `Task.status` is a plain `str` validated against the **active workflow definition** (`app/services/workflows/`, seeded any→any over `new`/`in_progress`/`completed`). Unknown state in a body → 422 `validation_error`; illegal move / non-entry create → 409 `invalid_transition`; `PUT /v1/workflow` rejects definitions stranding occupied states (409 `workflow_states_in_use`). Unknown *filter* values on `GET /v1/tasks` return 200 with no matches. Never reintroduce a status enum — states are runtime data.
+- **Workflow-governed status.** `Task.status` is a plain `str` validated against the **active workflow definition** (`app/services/workflows/`, seeded any→any over `new`/`in_progress`/`completed`). Unknown state in a body → 422 `unknown_status`; illegal move / non-entry create → 409 `invalid_transition`; `PUT /v1/workflow` rejects definitions stranding occupied states (409 `workflow_states_in_use`). Unknown *filter* values on `GET /v1/tasks` return 200 with no matches. Never reintroduce a status enum — states are runtime data.
 - **UTC everywhere.** All timestamps are `datetime.now(UTC)` and stored timezone-aware. The Docker image sets `TZ=UTC`. Naïve datetimes are a bug — see FRD §2.4.
 - **Error envelope.** Every non-2xx response is `{"error": {"code", "message", "details", "request_id"}}`. Feature-domain exceptions (`DuplicateTaskError`, `TaskNotFoundError`, `EmptyUpdateError`) live in `app/services/tasks/errors.py` and inherit from `AppError` base classes in `app/core/errors.py`; `ReadOnlyFieldError` lives in `app/core/errors.py` itself because server-owned-field rejection is a framework-level concern raised by the global validation handler, not by feature code. All paths are converted by a single global handler. See FRD §3.4 and §4. **Never inherit from plain `Exception`** — that bypasses the central handler and returns 500. In `dev` mode only, raisers may pass `original_error=` and the envelope's `details.cause` will surface the underlying exception (gated by `settings.expose_stack_traces`).
 - **Error file naming.** `errors.py` at the feature root, never `exceptions.py`.
@@ -112,9 +112,9 @@ The `Task` SQLModel row **is** the domain entity (`table=True`). There is no sep
 
 `pydantic-settings` selects a per-environment `.env.<APP_ENV>` file. `APP_ENV ∈ {dev, test, qa, prod}`, defaults to `dev`. Process env vars **override** file contents (k8s/CI win). `.env.example` is the only `.env.*` checked in; `.dockerignore` keeps `.env.*` out of the image. The `APP_ENV → (log_level, json_logs, expose_stack_traces)` matrix is in FRD §6.3.
 
-## SQLite specifics
+## Postgres specifics
 
-Phase 1 uses `sqlite+pysqlite:///:memory:` with a **`StaticPool`** so all sessions in the process see the same in-memory database — without StaticPool each connection gets its own DB and rows disappear between requests. The app factory must call `init_schema()` (creates tables on the shared connection) inside `lifespan` before serving traffic. See TIS §7.1 (StaticPool decision) and §8.7 (lifespan).
+Persistence is **PostgreSQL** via async SQLAlchemy (`create_async_engine` + `async_sessionmaker(class_=AsyncSession, expire_on_commit=False)`) over **asyncpg**. `app/core/database.py` exposes a re-bindable `configure(url, *, poolclass=None)` + `get_sessionmaker()` so tests (testcontainers) can point the app at a throwaway Postgres after import; `expire_on_commit=False` is load-bearing (post-commit `snapshot()` reads must not lazy-refresh). **Alembic owns the production schema** (`alembic upgrade head` runs at deploy via the Docker entrypoint, before uvicorn) — the lifespan no longer creates tables; it seeds the workflow row and disposes the engine on shutdown. Tests build the schema via the conftest fixture (`init_schema()` + TRUNCATE + reseed). Atomicity of the workflow-vs-status critical section is held by a transaction-scoped advisory lock (`pg_advisory_xact_lock`, acquired via `acquire_workflow_guard()`), which also makes multi-worker (`WEB_CONCURRENCY`) safe. See TIS §7.1, §8.7, §8.8.
 
 ## Test layout — the split rule
 
@@ -130,4 +130,4 @@ Every API row in FRD §3.1 has ≥1 integration test; every error `code` in FRD 
 
 ## Memory and prior context
 
-Project memory references: PRD/FRD/TIS were aligned to v1.1 feature-first hex on 2026-05-14 (sessions S674–S680). The 1695-line Phase 1 implementation plan and the scaffold commit are the immediate predecessors to any new work in this repo.
+Project memory references: PRD/FRD/TIS were aligned to v1.1 feature-first hex on 2026-05-14 (sessions S674–S680). Phase 1 shipped, workflow-as-a-service landed (commit `a6a0de4`), and the Phase-2 durability slice (Postgres/async/Alembic/UUIDv7/Python 3.14/advisory locks/zstd) is the most recent work — the running log lives in the project memory `phase_status.md`.

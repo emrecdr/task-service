@@ -7,12 +7,11 @@ import pytest
 from fastapi import BackgroundTasks
 
 from app.core.event_bus import Event, EventBus
-from app.services.tasks.interfaces import TaskRepositoryInterface
 from app.services.workflows.application.service import WorkflowService
 from app.services.workflows.domain.definition import Workflow
 from app.services.workflows.domain.events import WorkflowUpdated
 from app.services.workflows.errors import WorkflowStatesInUseError, WorkflowValidationError
-from app.services.workflows.interfaces import StoredWorkflow, WorkflowRepositoryInterface
+from app.services.workflows.interfaces import StatusUsagePort, StoredWorkflow, WorkflowRepositoryInterface
 from app.services.workflows.serialization import workflow_to_document
 
 _VALID_DOCUMENT: dict[str, Any] = {
@@ -25,41 +24,31 @@ class FakeWorkflowRepo(WorkflowRepositoryInterface):
     def __init__(self) -> None:
         self.stored: list[StoredWorkflow] = []
 
-    def get_active(self) -> StoredWorkflow:
+    async def acquire_workflow_guard(self) -> None:
+        return None
+
+    async def get_active(self) -> StoredWorkflow:
         return self.stored[-1]
 
-    def replace_active(self, workflow: Workflow) -> StoredWorkflow:
-        record = StoredWorkflow(workflow=workflow, version=len(self.stored) + 1, created_at=datetime.now(UTC))
+    async def replace_active(self, workflow: Workflow) -> StoredWorkflow:
+        record = StoredWorkflow(
+            workflow=workflow,
+            document=workflow_to_document(workflow),
+            version=len(self.stored) + 1,
+            created_at=datetime.now(UTC),
+        )
         self.stored.append(record)
         return record
 
 
-class StubTaskRepo(TaskRepositoryInterface):
-    """Only ``count_by_status`` is consulted by the workflow service."""
+class StubStatusUsage(StatusUsagePort):
+    """The only task-side fact the strand guard consults — status occupancy counts."""
 
     def __init__(self, counts: dict[str, int]) -> None:
         self._counts = counts
 
-    def count_by_status(self) -> dict[str, int]:
+    async def count_by_status(self) -> dict[str, int]:
         return self._counts
-
-    def add(self, **kwargs: Any) -> Any:  # pragma: no cover - never called
-        raise AssertionError("not used")
-
-    def get(self, task_id: int) -> Any:  # pragma: no cover - never called
-        raise AssertionError("not used")
-
-    def list(self, **kwargs: Any) -> Any:  # pragma: no cover - never called
-        raise AssertionError("not used")
-
-    def replace(self, task_id: int, **kwargs: Any) -> Any:  # pragma: no cover - never called
-        raise AssertionError("not used")
-
-    def patch(self, task_id: int, **fields: Any) -> Any:  # pragma: no cover - never called
-        raise AssertionError("not used")
-
-    def delete(self, task_id: int) -> Any:  # pragma: no cover - never called
-        raise AssertionError("not used")
 
 
 class RecordingBus(EventBus):
@@ -87,7 +76,7 @@ def bt() -> BackgroundTasks:
 
 
 def _service(repo: FakeWorkflowRepo, bus: RecordingBus, counts: dict[str, int] | None = None) -> WorkflowService:
-    return WorkflowService(repo=repo, tasks=StubTaskRepo(counts or {}), events=bus)
+    return WorkflowService(repo=repo, usage=StubStatusUsage(counts or {}), events=bus)
 
 
 class TestReplaceActive:

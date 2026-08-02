@@ -38,7 +38,7 @@ async def test_request_id_is_echoed_when_provided(client: AsyncClient) -> None:
 
 async def test_request_id_present_in_error_envelope(client: AsyncClient) -> None:
     given = "22222222-2222-2222-2222-222222222222"
-    r = await client.get("/v1/tasks/99999", headers={"X-Request-ID": given})
+    r = await client.get("/v1/tasks/00000000-0000-0000-0000-000000000000", headers={"X-Request-ID": given})
     assert r.status_code == 404
     err = r.json()["error"]
     assert err["request_id"] == given
@@ -88,9 +88,9 @@ async def test_middleware_log_reflects_error_status(client: AsyncClient, monkeyp
     recorder = _RecordingLogger()
     monkeypatch.setattr(middleware_mod, "logger", recorder)
 
-    r = await client.get("/v1/tasks/99999")
+    r = await client.get("/v1/tasks/00000000-0000-0000-0000-000000000000")
     assert r.status_code == 404
 
     [call] = [c for c in recorder.calls if c["event"] == "http_request"]
     assert call["status"] == 404
-    assert call["path"] == "/v1/tasks/99999"
+    assert call["path"] == "/v1/tasks/00000000-0000-0000-0000-000000000000"

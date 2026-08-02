@@ -45,7 +45,7 @@ async def test_create_with_unknown_state_returns_422(client: AsyncClient) -> Non
 
     r = await client.post("/v1/tasks", json={"title": "x", "priority": 3, "status": "ghost"})
 
-    err = assert_error(r, 422, ErrorCode.VALIDATION_ERROR)
+    err = assert_error(r, 422, ErrorCode.UNKNOWN_STATUS)
     assert err["details"] == {
         "field": "status",
         "value": "ghost",

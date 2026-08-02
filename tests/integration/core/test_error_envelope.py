@@ -29,8 +29,8 @@ async def _crash_client(error: Exception) -> AsyncGenerator[AsyncClient]:
 
 
 async def test_404_envelope_shape(client: AsyncClient) -> None:
-    r = await client.get("/v1/tasks/99999")
-    err = assert_error(r, 404, ErrorCode.TASK_NOT_FOUND, details={"id": 99999})
+    r = await client.get("/v1/tasks/00000000-0000-0000-0000-000000000000")
+    err = assert_error(r, 404, ErrorCode.TASK_NOT_FOUND, details={"id": "00000000-0000-0000-0000-000000000000"})
     assert "message" in err
 
 

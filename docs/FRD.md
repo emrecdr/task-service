@@ -16,7 +16,7 @@ The service follows **simplified Hexagonal Architecture (feature-first)** — ea
 | **Application** (`application/`)           | `TaskService` use-case orchestration; Pydantic DTOs (`TaskCreate`, `TaskPatch`, `TaskResponse`, `TaskListResponse`). | Domain + `interfaces.py`. **Not** `infrastructure/`, **not** `fastapi`.                  |
 | **Repository Interface** (`interfaces.py`) | ABC contracts for storage.                                                                                           | Domain only.                                                                             |
 | **Inbound Adapter** (`api/v1/`)            | FastAPI router and request handlers. Mounted by `app/main.py`.                                                       | Application + DI providers.                                                              |
-| **Outbound Adapters** (`infrastructure/`)  | `SQLModelTaskRepository`, `log_event` listener, future Postgres/Slack.                                               | Domain + interfaces + session helpers from `app/core/`.                                  |
+| **Outbound Adapters** (`infrastructure/`)  | `SQLModelTaskRepository`, `log_event` listener, future Slack notifier.                                               | Domain + interfaces + session helpers from `app/core/`.                                  |
 | **Cross-cutting** (`app/core/`)            | `AppError`, error codes, `EventBus`, `structlog` setup, Request-ID middleware, `/healthz`/`/readyz`, config.         | stdlib + framework. **Not** any individual service.                                      |
 
 **Architectural rules** are enforced by **code review**, not by `import-linter`. Reintroducing a linter for boundary checking is captured in TIS §10.1 as a Phase 2+ option if the team grows beyond one squad.
@@ -27,7 +27,7 @@ The service follows **simplified Hexagonal Architecture (feature-first)** — ea
 
 | Field         | Type            | Constraint                                                                                                      | Origin                    |
 | ------------- | --------------- | --------------------------------------------------------------------------------------------------------------- | ------------------------- |
-| `id`          | `int`           | Primary key, auto-incrementing positive integer, server-assigned.                                               | Repository.               |
+| `id`          | `uuid.UUID`     | Primary key, server-assigned UUIDv7 (time-ordered, `uuid.uuid7()`); the public identifier.                      | Repository.               |
 | `title`       | `str`           | Non-empty after trim; max 200 chars; **unique** across all tasks under a case-insensitive + trimmed comparison. | Caller.                   |
 | `description` | `str \| None`   | Optional; max 2000 chars.                                                                                       | Caller.                   |
 | `status`      | `str`           | A state of the **active workflow definition** (§2.2). Defaults to the workflow's `default_entry` on create.     | Caller (default applied). |
@@ -156,15 +156,17 @@ Malformed JSON request bodies (which FastAPI would otherwise surface as a raw `4
 | Title already exists (create or rename)                             | `DuplicateTaskError`         | `409 Conflict`              | `duplicate_task`   |
 | Task ID not found                                                   | `TaskNotFoundError`          | `404 Not Found`             | `task_not_found`   |
 | Empty/over-length title, priority out of range, malformed body      | (Pydantic `ValidationError`) | `422 Unprocessable Entity`  | `validation_error` |
-| Status in a request **body** that is no state of the active workflow | (core `ValidationError`, service-raised) | `422 Unprocessable Entity`  | `validation_error` |
+| Status in a request **body** that is no state of the active workflow | `UnknownStatusError` (service-raised) | `422 Unprocessable Entity`  | `unknown_status` |
 | Status change the active workflow does not allow (or create into a non-entry state) | `InvalidTransitionError`     | `409 Conflict`              | `invalid_transition` |
 | `PUT /v1/workflow` body that fails definition validation (all problems listed at once) — including server-owned `version`/`created_at` keys, rejected as unknown top-level keys (deliberately **not** `read_only_field`: the body is a definition document, not the resource) | `WorkflowValidationError`    | `422 Unprocessable Entity`  | `invalid_workflow_definition` |
 | `PUT /v1/workflow` that would strand tasks in undefined states      | `WorkflowStatesInUseError`   | `409 Conflict`              | `workflow_states_in_use` |
 | PATCH body with no fields                                           | `EmptyUpdateError`           | `422 Unprocessable Entity`  | `empty_update`     |
 | Attempt to set server-owned field on PUT/PATCH (`id`, `created_at`) | `ReadOnlyFieldError`         | `422 Unprocessable Entity`  | `read_only_field`  |
+| Request body whose declared `Content-Length` exceeds the configured limit | (request-hardening middleware) | `413 Content Too Large`  | `payload_too_large` |
+| Handler exceeds the configured wall-clock budget                    | (request-hardening middleware) | `504 Gateway Timeout`     | `request_timeout`  |
 | Anything else (truly unexpected)                                    | `Exception`                  | `500 Internal Server Error` | `internal_error`   |
 
-A single global FastAPI exception handler converts domain exceptions to the error envelope above. Stack traces are **never** included in production responses (controlled by `APP_ENV`).
+A single global FastAPI exception handler converts domain exceptions to the error envelope above. Stack traces are **never** included in production responses (controlled by `APP_ENV`). The `payload_too_large` and `request_timeout` responses are emitted by request-hardening middleware (`app/core/middleware.py`) via the same `ErrorEnvelope` builder, so their wire shape is identical even though they short-circuit before the handler path.
 
 ## 5. Domain Event System
 
@@ -221,7 +223,7 @@ Rules:
 | -------------------- | --------------------------- | ----------------------------- | ----------------------------------------------------------------- |
 | `APP_ENV`            | `dev \| test \| qa \| prod` | `dev`                         | Selects the `.env.*` file and drives log level + error verbosity. |
 | `LOG_LEVEL`          | log-level string            | derived from `APP_ENV`        | Explicit override.                                                |
-| `DATABASE_URL`       | str                         | `sqlite+pysqlite:///:memory:` | SQLModel engine URL.                                              |
+| `DATABASE_URL`       | str                         | `postgresql+asyncpg://…`      | Async SQLAlchemy (asyncpg) engine URL.                            |
 | `PROJECT_NAME`       | str                         | `Internal Task Service`       | OpenAPI title.                                                    |
 | `API_PREFIX`         | str                         | `/v1`                         | Allows hosting under a different base path.                       |
 | `DEFAULT_LIST_LIMIT` | int                         | `100`                         | Default pagination limit.                                         |
@@ -239,6 +241,7 @@ Rules:
 ## 7. Observability
 
 - **Request-ID middleware:** every incoming request receives an `X-Request-ID` header (generated as a UUIDv4 if absent) and the value is bound to the log context for the duration of the request. Every response carries the same header back.
+- **Response compression (`ZstdMiddleware`):** when a client sends `Accept-Encoding: zstd`, buffered responses ≥ 500 bytes are compressed with zstd (Python 3.14 stdlib `compression.zstd`) in `app/core/compression.py`; the response gains `Content-Encoding: zstd` and `Vary: Accept-Encoding`.
 - **Structured logging:** logs are emitted as single-line JSON when `APP_ENV ∈ {qa, prod}` and as human-readable lines in `dev`. Every line includes `timestamp`, `level`, `request_id`, `event`, and contextual key/value pairs. `test` keeps logs quiet (`WARNING+`) to avoid noisy pytest output.
 - **Health endpoints:**
   - `GET /healthz` — returns 200 if the process is up. Synchronous, no I/O.
@@ -248,13 +251,13 @@ Rules:
 
 | Aspect          | Requirement                                                                                                                                                       |
 | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Python**      | 3.13+                                                                                                                                                             |
+| **Python**      | 3.14+                                                                                                                                                             |
 | **Framework**   | FastAPI ≥ 0.110                                                                                                                                                   |
 | **ORM**         | SQLModel (pinned via `uv.lock`)                                                                                                                                   |
 | **Config**      | `pydantic-settings`                                                                                                                                               |
 | **Logging**     | `structlog` (with stdlib `logging` interception so library logs route through the same sink). Standard structured-logging library for production Python services. |
-| **Async**       | Routes may be `async def`; the repository is synchronous in Phase 1 (SQLite).                                                                                     |
-| **Concurrency** | Single uvicorn worker assumed in Phase 1. Adapters must be safe under that model.                                                                                 |
+| **Async**       | Routes and the repository/service layer are `async def` (async SQLAlchemy over asyncpg).                                                                          |
+| **Concurrency** | Multi-worker via `WEB_CONCURRENCY` (default 1) → `uvicorn --workers`. Atomicity held by a Postgres transaction-scoped advisory lock.                              |
 
 ## 9. Test Strategy
 
@@ -265,10 +268,10 @@ The project uses a **hybrid test layout**: unit tests live alongside the feature
 | Category           | Where                       | Tooling                                                | What is covered                                                                                                                                                                                                                                                                                                                                                                |
 | ------------------ | --------------------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **Unit**           | `app/services/tasks/tests/` | `pytest`                                               | Domain rules on `Task` (title normalization, `title_key` collisions, priority bounds, factory validation). Service-layer orchestration with a fake `TaskRepositoryInterface` and a fake `EventBus`: events fire on correct paths; `TaskCompleted` only fires when the entered state carries `"completes": true`; PATCH with no changes does not fire `TaskUpdated`. No FastAPI, no DB I/O. |
-| **Integration**    | `tests/integration/`        | `pytest` + `httpx.AsyncClient` against the FastAPI app | All endpoints, all error codes, query-param validation, pagination, error-envelope shape, `X-Request-ID` round-trip. In-process; uses SQLite `:memory:`.                                                                                                                                                                                                                       |
+| **Integration**    | `tests/integration/`        | `pytest` + `httpx.AsyncClient` against the FastAPI app | All endpoints, all error codes, query-param validation, pagination, error-envelope shape, `X-Request-ID` round-trip. In-process; uses a throwaway Postgres 17 (testcontainers).                                                                                                                                                                                                |
 | **Contract**       | `tests/contract/`           | `pytest` parametrized over every concrete repository   | Conformance of any `TaskRepositoryInterface` implementation. Adding a new adapter (e.g., Postgres in Phase 2) requires zero new test code.                                                                                                                                                                                                                                     |
 | **E2E (Hurl)**     | `tests/hurl/`               | `hurl` CLI against the running Docker container        | Black-box scenarios over real HTTP. One scenario per file with plain descriptive names (e.g., `task_create.hurl`, `task_lifecycle.hurl`, `healthz.hurl`).                                                                                                                                                                                                                      |
-| **E2E (property)** | `tests/e2e/`                | `Schemathesis` driven by the OpenAPI schema            | Property-based testing that asserts no 5xx and schema-conformant responses. Optional in Phase 1, mandatory in Phase 2.                                                                                                                                                                                                                                                         |
+| **E2E (property)** | `tests/e2e/`                | `Schemathesis` driven by the OpenAPI schema            | Property-based testing that asserts no 5xx and schema-conformant responses. Runs as a dedicated CI step; excluded from the default local `pytest` via the `e2e` marker for speed.                                                                                                                                                                                                                                                         |
 | **Static**         | `ruff`, `pyright`, `bandit` | Lint, type-check, security-lint.                       | Run via `pre-commit` locally and in CI.                                                                                                                                                                                                                                                                                                                                        |
 
 ### 9.2 Test split rule
@@ -299,7 +302,7 @@ Coverage target: **≥ 80%** on the `app/` package (excluding `app/main.py` boot
 | `pyright`                              | Static type checking (strict mode on `app/` and `tests/`).                                                                                                                                                                                | CI.                                                    |
 | `bandit`                               | Security linter for common Python pitfalls (`assert` in prod paths, weak crypto, hardcoded passwords). Configured via `[tool.bandit]` in `pyproject.toml`; severity ≥ `medium` fails CI.                                                 | CI.                                                    |
 | `pre-commit`                           | Local pre-commit hooks runner. Pinned via `.pre-commit-config.yaml`; runs `ruff`, `ruff format`, `bandit`, end-of-file/whitespace fixers, and `uv lock --check` to keep `uv.lock` in sync. Onboarding step: `uv run pre-commit install`. | Developer machines (locally) **and** CI as a backstop. |
-| `schemathesis` _(optional in Phase 1)_ | OpenAPI-driven property-based E2E tests. Promoted to a required gate in Phase 2.                                                                                                                                                         | CI (optional).                                         |
+| `schemathesis` _(CI-gated; opt-in locally)_ | OpenAPI-driven property-based E2E tests. Runs as a dedicated required CI step.                                                                                                                                                         | CI (required step).                                    |
 
 The four mandatory dev-tool gates (`ruff`, `pyright`, `bandit`, `pre-commit`) are wired into both local hooks and CI to ensure no commit reaches `main` without passing them. `import-linter` is **deliberately not used** in Phase 1 — boundaries are enforced by code review. Reintroducing it is a Phase 2 option if the team grows beyond one squad.
 
@@ -321,6 +324,6 @@ The Phase 1 release ships when all of the following hold:
 This section intentionally holds no list. The roadmap split is:
 
 - **Product features** (Postgres, Alembic, RBAC, Slack notifier, `/metrics`, audit log, SPA, …) → **PRD §12**.
-- **Tooling considerations** (`import-linter` reintroduction, schemathesis promotion to required gate, …) → **TIS §10.1**.
+- **Tooling considerations** (`import-linter` reintroduction, …) → **TIS §10.1**.
 
 Adding a Phase 2 item here would create a third source of truth and re-introduce the drift we just cleaned up.

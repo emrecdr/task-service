@@ -1,7 +1,7 @@
 .PHONY: help all install \
         clean clean-all port-check-kill \
         lint typecheck test test-unit test-integration test-contract \
-        hurl-e2e schemathesis \
+        hurl-e2e schemathesis migrate db-revision \
         run \
         docker-build compose-up compose-down compose-logs
 
@@ -40,18 +40,29 @@ test: ## 🧪 Run all tests with coverage gate (--cov-fail-under=80)
 test-unit: ## 🧪 Unit tests only — feature-local, no FastAPI/DB
 	uv run pytest app/services --no-cov
 
-test-integration: ## 🧪 Integration tests — in-process FastAPI + SQLite :memory:
+test-integration: ## 🧪 Integration tests — in-process FastAPI + Postgres (testcontainers)
 	uv run pytest tests/integration --no-cov
+
+# --- Database migrations ---------------------------------------------------
+
+migrate: ## 🗄️  Apply Alembic migrations (alembic upgrade head)
+	uv run alembic upgrade head
+
+db-revision: ## 🗄️  Autogenerate a migration from model changes: make db-revision m="message"
+	uv run alembic revision --autogenerate -m "$(m)"
 
 test-contract: ## 🧪 Contract tests — repository ABC conformance
 	uv run pytest tests/contract --no-cov
 
 # --- E2E (against running container) ---------------------------------------
 
-# ``--jobs 1`` is required: Phase 1's in-memory SQLite + StaticPool serialises
-# on a single connection; Hurl's default parallel runs race on session state.
-hurl-e2e: ## 🌐 Run Hurl E2E suite (--jobs 1) against the docker-compose service
-	@trap '$(DOCKER_COMPOSE) down' EXIT; \
+# ``--jobs 1``: the compose Postgres is shared across scenarios with no per-scenario
+# reset, so parallel Hurl runs would race on task/list counts. (Postgres removed the
+# old StaticPool single-connection constraint; concurrency *correctness* is covered by
+# the advisory-lock tests under tests/integration.) ``down -v`` drops the volume so
+# each run starts from a fresh, freshly-migrated database.
+hurl-e2e: ## 🌐 Run Hurl E2E suite against the docker-compose stack (fresh DB per run)
+	@trap '$(DOCKER_COMPOSE) down -v' EXIT; \
 	$(DOCKER_COMPOSE) up -d --wait task-service && \
 	hurl --test --jobs 1 \
 	     --variable base_url=http://localhost:$(APP_PORT) \

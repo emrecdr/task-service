@@ -41,5 +41,5 @@ async def test_transitions_passes_definition_meta_through(client: AsyncClient, c
 
 
 async def test_transitions_unknown_id_returns_404(client: AsyncClient) -> None:
-    r = await client.get("/v1/tasks/99999/transitions")
+    r = await client.get("/v1/tasks/00000000-0000-0000-0000-000000000000/transitions")
     assert_error(r, 404, ErrorCode.TASK_NOT_FOUND)

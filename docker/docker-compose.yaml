@@ -1,21 +1,44 @@
-# Local container for development and Hurl E2E smoke tests.
-# Host port overridable via ``APP_PORT``; internal port is fixed at 8000
-# to match the Dockerfile ``CMD`` and the healthcheck below.
+# Local container stack for development and Hurl E2E smoke tests.
+# Host port overridable via ``APP_PORT``; internal port is fixed at 8000.
 
 services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: taskservice
+      POSTGRES_PASSWORD: taskservice
+      POSTGRES_DB: taskservice
+    volumes:
+      - task-service-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U taskservice -d taskservice"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+      start_period: 5s
+
   task-service:
-    # ``APP_ENV=prod`` and ``TZ=UTC`` are baked into the image
-    # (see ``docker/Dockerfile``); not duplicated here to avoid drift.
+    # ``APP_ENV=prod`` and ``TZ=UTC`` are baked into the image (see ``docker/Dockerfile``);
+    # DATABASE_URL must be supplied here to reach the ``postgres`` service.
     build:
       context: ..
       dockerfile: docker/Dockerfile
     image: internal-task-service:dev
+    environment:
+      DATABASE_URL: postgresql+asyncpg://taskservice:taskservice@postgres:5432/taskservice
+      # WEB_CONCURRENCY: "4"   # uncomment for multi-worker (safe on Postgres + advisory guards)
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "${APP_PORT:-8000}:8000"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz').read()"]
       interval: 5s
       timeout: 2s
-      retries: 5
-      # Cold Python + FastAPI lifespan can exceed 3s on constrained CI runners.
-      start_period: 10s
+      retries: 10
+      # Cold Python + Alembic migrations + FastAPI lifespan can exceed a few seconds.
+      start_period: 20s
+
+volumes:
+  task-service-pgdata:

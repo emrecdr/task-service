@@ -1,12 +1,15 @@
+import uuid
 from datetime import UTC, datetime
 from typing import Any, Final, Self
 
+from sqlalchemy import Column, DateTime, UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 from app.services.tasks.constants import (
     DESCRIPTION_MAX_LENGTH,
     PRIORITY_MAX,
     PRIORITY_MIN,
+    TITLE_KEY_CONSTRAINT,
     TITLE_MAX_LENGTH,
     TITLE_MIN_LENGTH,
 )
@@ -17,17 +20,20 @@ MUTABLE_FIELDS: Final[tuple[str, ...]] = ("title", "description", "status", "pri
 
 class Task(SQLModel, table=True):
     __tablename__ = "tasks"  # pyright: ignore[reportAssignmentType]
+    # Named explicitly so duplicate detection matches the constraint name via asyncpg,
+    # not a dialect-specific error-message substring.
+    __table_args__ = (UniqueConstraint("title_key", name=TITLE_KEY_CONSTRAINT),)
 
-    id: int | None = Field(default=None, primary_key=True)
+    id: uuid.UUID = Field(default_factory=uuid.uuid7, primary_key=True)
     title: str = Field(min_length=TITLE_MIN_LENGTH, max_length=TITLE_MAX_LENGTH)
-    title_key: str = Field(index=True, unique=True, max_length=TITLE_MAX_LENGTH)
+    title_key: str = Field(max_length=TITLE_MAX_LENGTH)
     description: str | None = Field(default=None, max_length=DESCRIPTION_MAX_LENGTH)
     status: str
     priority: int = Field(ge=PRIORITY_MIN, le=PRIORITY_MAX)
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC),
-        nullable=False,
-        index=True,
+        # timestamptz — preserve tz on Postgres (sa_column, so default stays Python-side).
+        sa_column=Column(DateTime(timezone=True), nullable=False, index=True),
     )
 
     @staticmethod
@@ -64,6 +70,14 @@ class Task(SQLModel, table=True):
     def snapshot(self) -> Self:
         """Detached, revalidated copy for event payloads."""
         return type(self).model_validate(self.model_dump())
+
+    def changed_fields(self, previous: Self) -> list[str]:
+        """Mutable fields whose value differs from ``previous``, in canonical order.
+
+        The single source of truth for "did this write change anything" — the
+        repository gates its commit on it and the service gates event fan-out on it.
+        """
+        return [field for field in MUTABLE_FIELDS if getattr(self, field) != getattr(previous, field)]
 
     def apply_replace(
         self,

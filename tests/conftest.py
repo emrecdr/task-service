@@ -1,34 +1,52 @@
-# StaticPool shares one connection process-wide; tests cannot run with pytest-xdist.
+# All tests run against a throwaway Postgres (testcontainers). Per-test isolation is
+# TRUNCATE ... RESTART IDENTITY + reseed — fast, and avoids drop/create per test.
 
 import os
 
 # Lock APP_ENV before app modules import.
 os.environ.setdefault("APP_ENV", "test")
 
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from typing import Any
 
 import pytest
-from app.core.database import engine, init_schema
+from app.core import database
 from app.core.errors import ErrorCode
 from app.main import app
 from app.services.workflows.infrastructure.seed import seed_workflow_if_missing
 from httpx import ASGITransport, AsyncClient, Response
-from sqlmodel import SQLModel
+from sqlalchemy import text
+from sqlalchemy.pool import NullPool
+from testcontainers.community.postgres import PostgresContainer
 
-type CreateTask = Callable[..., Awaitable[int]]
+type CreateTask = Callable[..., Awaitable[str]]
+
+_TRUNCATE = text("TRUNCATE tasks, workflow_definitions RESTART IDENTITY CASCADE")
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _postgres_container() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]
+    """Start one Postgres for the whole session; point the app engine at it (NullPool)."""
+    with PostgresContainer("postgres:17", driver="asyncpg") as pg:
+        # NullPool: each operation opens a fresh connection on the current loop — needed
+        # because Schemathesis drives the ASGI app in a separate portal loop, and a shared
+        # pool's connections are loop-bound ("attached to a different loop").
+        database.configure(pg.get_connection_url(), poolclass=NullPool)
+        yield
 
 
 @pytest.fixture(autouse=True)
-def _fresh_schema() -> None:  # pyright: ignore[reportUnusedFunction]
-    """Recreate the in-memory schema between tests so they are isolated.
+async def _fresh_data() -> None:  # pyright: ignore[reportUnusedFunction]
+    """Ensure the schema exists (idempotent) then reset rows: TRUNCATE + reseed.
 
-    Seeds the workflow row here as well as in the app lifespan so repo and
-    contract tests that never run lifespan still see the startup invariant.
+    Schema DDL runs here — in the test's own event loop / greenlet — rather than in
+    the session fixture, which would create engine state on a closed loop.
     """
-    SQLModel.metadata.drop_all(engine)
-    init_schema()
-    seed_workflow_if_missing()
+    await database.init_schema()
+    async with database.session_factory() as session:
+        await session.execute(_TRUNCATE)
+        await session.commit()
+    await seed_workflow_if_missing()
 
 
 @pytest.fixture
@@ -43,12 +61,12 @@ async def client() -> AsyncIterator[AsyncClient]:
 
 @pytest.fixture
 def create_task(client: AsyncClient) -> CreateTask:
-    """Factory: ``await create_task(title, priority=3)`` → new task id."""
+    """Factory: ``await create_task(title, priority=3)`` → new task id (UUID string)."""
 
-    async def _factory(title: str, priority: int = 3) -> int:
+    async def _factory(title: str, priority: int = 3) -> str:
         r = await client.post("/v1/tasks", json={"title": title, "priority": priority})
         assert r.status_code == 201, r.text
-        return int(r.json()["id"])
+        return str(r.json()["id"])
 
     return _factory
 

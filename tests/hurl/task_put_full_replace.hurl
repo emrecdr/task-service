@@ -32,7 +32,7 @@ jsonpath "$.error.code" == "read_only_field"
 jsonpath "$.error.details.field" == "id"
 
 # PUT to non-existent id → 404.
-PUT {{base_url}}/v1/tasks/9999999
+PUT {{base_url}}/v1/tasks/00000000-0000-0000-0000-000000000000
 Content-Type: application/json
 { "title": "hurl put missing", "priority": 1 }
 HTTP 404

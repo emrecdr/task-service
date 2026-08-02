@@ -66,7 +66,7 @@ task-service/
 │   │   ├── event_bus.py              # In-process Event Bus + base Event
 │   │   ├── logging.py                # structlog setup (env-aware) + RequestIDMiddleware
 │   │   ├── health.py                 # /healthz, /readyz handlers
-│   │   ├── database.py               # Session factory (SQLite :memory:, StaticPool)
+│   │   ├── database.py               # Async Postgres engine + async_sessionmaker (asyncpg)
 │   │   └── dependencies.py           # Core DI providers (session, event bus)
 │   └── services/
 │       └── tasks/
@@ -111,7 +111,7 @@ task-service/
 │           │   ├── definition.py     # Workflow: states + transition table + reachability
 │           │   └── events.py         # WorkflowUpdated
 │           ├── infrastructure/
-│           │   ├── repository.py     # WorkflowRecord (JSON column) + SQLModelWorkflowRepository
+│           │   ├── repository.py     # WorkflowRecord (JSONB column) + SQLModelWorkflowRepository
 │           │   ├── seed.py           # default_workflow() + seed_workflow_if_missing()
 │           │   └── listeners.py      # log_event listener
 │           └── tests/                # test_models, test_definition, test_serialization, test_service
@@ -152,7 +152,7 @@ task-service/
 │   │   └── zzz_workflow_admin.hurl   # workflow admin + enforcement (runs last)
 │   └── e2e/                          # OpenAPI-driven property tests + future container E2E
 │       ├── .gitkeep
-│       └── test_schemathesis.py      # optional in Phase 1
+│       └── test_schemathesis.py      # opt-in locally; gated in CI
 ├── docker/
 │   ├── Dockerfile
 │   └── docker-compose.yaml
@@ -317,25 +317,25 @@ Five Pydantic V2 models in `application/dto.py`:
 
 **`NonBlankTitle`** is a reusable Pydantic V2 `Annotated` alias that combines the length bounds with an `AfterValidator(_require_non_blank_title)`. Both `TaskCreate` and `TaskPatch` use it by reference, so the whitespace-only-title rejection rule is defined once. This is the idiomatic V2 replacement for hand-rolled `@field_validator` decorators duplicated across DTOs.
 
-`created_at` serialisation deserves a note: SQLite strips tzinfo on roundtrip, so the value read back is naive-but-UTC-by-convention. `TaskResponse._serialize_created_at` calls `ensure_utc()` from `app/core/datetime_utils.py` to restore tzinfo and emits the value as RFC 3339 with an explicit `Z` UTC marker (FRD §2.4).
+`created_at` serialisation deserves a note: the column is Postgres `timestamptz` (`DateTime(timezone=True)`), so the value read back over asyncpg is already tz-aware UTC — no roundtrip stripping. `TaskResponse._serialize_created_at` calls `ensure_utc()` from `app/core/datetime_utils.py` as a defensive normaliser and emits the value as RFC 3339 with an explicit `Z` UTC marker (FRD §2.4).
 
 ---
 
 ## 7. Infrastructure
 
-**Purpose.** Implement the ports the application defines, talk to the framework (FastAPI) and the data store (SQLModel/SQLite). Anything that touches a third-party library lives here.
+**Purpose.** Implement the ports the application defines, talk to the framework (FastAPI) and the data store (SQLModel over async Postgres, asyncpg). Anything that touches a third-party library lives here.
 
 ### 7.1 `SQLModelTaskRepository` — the storage adapter
 
 > **Pure design — no FRD clause.** Adapter mechanics; the storage port (§5) is internal.
 
-Implements `TaskRepositoryInterface` against SQLModel sessions. The adapter is responsible for three concerns the application layer must not see:
+Implements `TaskRepositoryInterface` against SQLModel async sessions (`AsyncSession`). The adapter is responsible for three concerns the application layer must not see:
 
-1. **Translating driver errors into domain errors.** `IntegrityError` whose payload contains `"title_key"` becomes `DuplicateTaskError(details={"title": title})`. Any other `IntegrityError` re-raises so unexpected failures aren't silently mapped to a wrong code. The translation is centralised in `_commit_or_translate(title)` — every write path that actually mutates state calls it (no-op PATCH short-circuits).
+1. **Translating driver errors into domain errors.** An `IntegrityError` wrapping an asyncpg `UniqueViolationError` whose `constraint_name == "uq_tasks_title_key"` becomes `DuplicateTaskError(details={"title": title})` — a dialect-stable check, not a message-substring match. Any other `IntegrityError` re-raises so unexpected failures aren't silently mapped to a wrong code. The translation is centralised in `_commit_or_translate(title)` — every write path that actually mutates state calls it (no-op PATCH short-circuits).
 2. **Honouring the single-fetch tuple contract.** `replace()` and `patch()` capture `previous = task.snapshot()` _before_ mutating in place, then return `(previous, task)` after `_commit_or_translate(...)` (skipped when no mutable field actually changed). The service layer pays exactly one `get()` per write.
 3. **Pagination + sort + filter for `list()`.** The query is built dynamically: optional `WHERE status IN (...)` for filters; primary `ORDER BY <order_by>` using `getattr(Task, order_by)` (`order_by` is a `TaskSortField` StrEnum whose value is the column name); secondary `ORDER BY created_at ASC` as a deterministic tiebreaker; `LIMIT/OFFSET` for pagination. A separate `SELECT COUNT(*)` returns `total`.
 
-> **Decision.** SQLite + `StaticPool`, Phase 1 only. SQLAlchemy's default pool gives each new connection its own private `:memory:` database — schema created in one connection is invisible to the next. `poolclass=StaticPool` + `connect_args={"check_same_thread": False}` forces every session to share one connection. The cost: writes serialise on that connection (which is why `hurl-e2e` runs with `--jobs 1`). The benefit: the test suite, the app, and the readiness probe all see the same schema. This quirk evaporates the day Postgres replaces SQLite.
+> **Decision.** PostgreSQL 17 over async SQLAlchemy 2.x — `create_async_engine` + `async_sessionmaker(class_=AsyncSession, expire_on_commit=False)` on the asyncpg driver. The engine runs `pool_pre_ping=True` so stale pooled connections are recycled before use; the test suite injects `poolclass=NullPool` and spins a per-test testcontainers Postgres for isolation. Schema is owned by Alembic (`alembic upgrade head` at deploy), not by the app. The old SQLite `:memory:` + `StaticPool` + `check_same_thread=False` workaround — needed only so every session shared one in-memory connection — is gone.
 
 ### 7.2 Event listener (`log_event`)
 
@@ -388,6 +388,8 @@ The `ctx` field is stripped from Pydantic error rows because it carries the non-
 **Background Tasks integration.** FastAPI's `BackgroundTasks` is the seam: the request handler returns immediately, the response is flushed to the client, then the background tasks run on the same event loop. The bus does not call handlers inline — that would block the response on a slow listener.
 
 > **Decision.** Phase 1 deliberately omits retry, dead-letter queues, circuit breakers, and deduplication. They have not earned their weight at this scale; revisit if the event bus ever crosses a process boundary (e.g., when the Slack notifier in PRD §12 lands and starts hitting flaky external APIs).
+>
+> **Worker scope (multi-worker).** The bus is **per-worker**: with `WEB_CONCURRENCY>1` a handler sees only the events published in its own process. This is correct for the current log-only listeners — each worker logging its own events is the intended behaviour. It becomes a gap only when a listener needs *global* delivery (notifications, an outbox, a read-model); the fix then is a transactional outbox or Postgres `LISTEN/NOTIFY`. Deliberately **deferred** until such a listener is scheduled (2026-08-03 decision) — building durable cross-worker delivery before a consumer exists is speculative.
 
 ### 8.3 Structured logging (`core/logging.py`)
 
@@ -439,15 +441,15 @@ The `Settings` class exposes three derived properties driven by the `APP_ENV →
 
 **Pattern.** Factory Method + Lifespan-managed resources.
 
-The `create_app()` function is the single entrypoint: it builds the `FastAPI` instance, attaches the `RequestIDMiddleware`, registers exception handlers, mounts the health router and the tasks router (prefixed by `settings.api_prefix`), and configures the custom OpenAPI operation-id function (`<tag>-<route_name>`, which keeps generated client SDKs readable).
+The `create_app()` function is the single entrypoint: it builds the `FastAPI` instance, attaches the middleware stack (`ZstdMiddleware` first so it sits innermost — §8.9 — then `RequestIDMiddleware`), registers exception handlers, mounts the health router and the tasks router (prefixed by `settings.api_prefix`), and configures the custom OpenAPI operation-id function (`<tag>-<route_name>`, which keeps generated client SDKs readable).
 
 The `lifespan` async context manager owns startup and shutdown:
 
 1. `setup_logging()` — configure `structlog` once.
-2. `init_schema()` — create tables on the shared StaticPool connection (Phase 1; Phase 2 swaps this for migrations).
+2. `seed_workflow_if_missing()` — Alembic owns the production schema (`alembic upgrade head` runs at deploy via the Docker entrypoint, before uvicorn), so lifespan no longer creates tables; it only idempotently seeds the default workflow row under the advisory-lock guard (§8.8). The per-test conftest fixture builds the schema via `init_schema()`.
 3. `EventBus()` instance + `register_task_listeners(bus)` — wire the five `Task*` events to the logging listener. The feature owns its event-type tuple; `app.main` stays decoupled.
 4. `app.state.event_bus = bus` — exposed so `get_event_bus` (§8.8) can hand it to route handlers.
-5. On shutdown: emit a structured log line. No connection teardown needed for in-memory SQLite.
+5. On shutdown: emit a structured log line, then `await dispose_engine()` to dispose the async engine and its connection pool.
 
 ### 8.8 Dependency Injection
 
@@ -457,7 +459,7 @@ The `lifespan` async context manager owns startup and shutdown:
 
 Two layers of providers:
 
-- **Core providers (`core/dependencies.py`):** `get_session()` (yields a SQLModel `Session` from the shared `session_factory`), `get_event_bus(request)` (reads `request.app.state.event_bus` set by the lifespan).
+- **Core providers (`core/dependencies.py`):** `get_session()` (yields an `AsyncSession` from the shared `session_factory()`), `get_event_bus(request)` (reads `request.app.state.event_bus` set by the lifespan).
 - **Feature providers (`services/tasks/dependencies.py`):** compose the core providers into feature-level dependencies. `get_repository(session)` returns a `SQLModelTaskRepository`; `get_task_service(repo, events)` returns a fully wired `TaskService`. Each is paired with a typed alias — `SessionDep`, `EventBusDep`, `RepositoryDep`, `TaskServiceDep`, `TaskQueryParamsDep` — so route signatures read like `service: TaskServiceDep` rather than `service: TaskService = Depends(get_task_service)`.
 
 The Annotated style means:
@@ -466,7 +468,13 @@ The Annotated style means:
 2. Aliases compose. `RepositoryDep` is `Annotated[TaskRepositoryInterface, Depends(get_repository)]`; the route declares `service: TaskServiceDep` and never sees the chain underneath.
 3. Swapping a collaborator (e.g. an `AsyncTaskRepository` in Phase 2) means editing one alias and one provider — call sites are unchanged.
 
-**Cross-feature seam (tasks ↔ workflows).** A service that needs another feature's data receives that feature's **repository interface** via constructor injection: `TaskService(repo, workflows: WorkflowRepositoryInterface, events)` consults the active definition; `WorkflowService(repo, tasks: TaskRepositoryInterface, events)` runs the strand guard over `count_by_status()`. Interface modules are import-graph leaves, so the mutual use is acyclic. Each feature's `dependencies.py` imports the *other feature's concrete repository* (never its `dependencies.py`) and constructs both repositories from the **same request session** — the single-session invariant that makes the read-check-write spans atomic under the single-threaded loop + StaticPool. The active definition is **read fresh per request, no process cache**: one PK read on in-memory SQLite is trivial, and a cache would fight both PUT invalidation and the per-test schema reset (revisit with profiling data only).
+**Cross-feature seam (tasks ↔ workflows).** A service that needs another feature's data receives that feature's **repository interface** via constructor injection: `TaskService(repo, workflows: WorkflowRepositoryInterface, events)` consults the active definition; `WorkflowService(repo, tasks: TaskRepositoryInterface, events)` runs the strand guard over `count_by_status()`. Interface modules are import-graph leaves, so the mutual use is acyclic. Each feature's `dependencies.py` imports the *other feature's concrete repository* (never its `dependencies.py`) and constructs both repositories from the **same request `AsyncSession`** — the single-session invariant that lets a workflow-vs-status critical section take a transaction-scoped advisory lock (`WorkflowRepositoryInterface.acquire_workflow_guard()` → `SELECT pg_advisory_xact_lock(:key)`) as its first db op and release it at the span's single commit, so no concurrent write can interleave the read-check-write. The active definition is **read fresh per request, no process cache**: one PK read on Postgres is trivial, and a cache would fight both PUT invalidation and the per-test schema reset (revisit with profiling data only).
+
+### 8.9 Response compression middleware (`core/compression.py`)
+
+> **Pure design — no FRD clause.**
+
+`ZstdMiddleware` negotiates zstd response compression using the Python 3.14 stdlib `compression.zstd` module (PEP 784) — no third-party dependency. It is installed **innermost** (added to the app first): a Starlette `BaseHTTPMiddleware` re-frames responses into `more_body` chunks that a compressor sitting outside it would decline to buffer, so the compressor must wrap the raw route response before `RequestIDMiddleware` reshapes it. When the client sends `Accept-Encoding: zstd` and the buffered body is at least `ZSTD_MINIMUM_SIZE_BYTES` (500 bytes), it compresses the body and sets `Content-Encoding: zstd` plus `Vary: Accept-Encoding`. Streaming responses, already-encoded bodies, and sub-threshold payloads pass through untouched.
 
 ---
 
@@ -558,7 +566,7 @@ jsonpath "$.error.code" == "task_not_found"
 
 Hurl reports are written to `reports/hurl/` (HTML + JSON) and uploaded as CI artifacts.
 
-### 9.3 Schemathesis (optional, OpenAPI-driven)
+### 9.3 Schemathesis (CI-gated; opt-in locally, OpenAPI-driven)
 
 > **Pure design.**
 
@@ -578,7 +586,7 @@ def test_no_5xx_and_schema_conformance(case: schemathesis.Case) -> None:
     case.call_and_validate()
 ```
 
-Complements the Hurl scenario tests by generating property-based cases the human writer never thought of. Phase 1 ships it as opt-in (gated by the `e2e` pytest marker; the default `addopts` filter `-m 'not e2e'` keeps `make test` fast). Run explicitly via `make schemathesis`, which calls `pytest -m e2e`. The ASGI loader (`schemathesis.openapi.from_asgi`) runs the property tests in-process against the live FastAPI app — no running container required. Phase 2 wires it into the default CI pipeline.
+Complements the Hurl scenario tests by generating property-based cases the human writer never thought of. Phase 1 ships it as opt-in (gated by the `e2e` pytest marker; the default `addopts` filter `-m 'not e2e'` keeps `make test` fast). Run explicitly via `make schemathesis`, which calls `pytest -m e2e`. The ASGI loader (`schemathesis.openapi.from_asgi`) runs the property tests in-process against the live FastAPI app — no running container required. A dedicated CI step runs it on every push and PR; the default local `pytest` still excludes it via the marker for speed.
 
 ### 9.4 Coverage gate
 
@@ -600,7 +608,7 @@ Complements the Hurl scenario tests by generating property-based cases the human
 [project]
 name = "internal-task-service"
 version = "0.1.0"
-requires-python = ">=3.13"
+requires-python = ">=3.14"
 dependencies = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.30",
@@ -630,18 +638,18 @@ severity = "medium"
 
 [tool.ruff]
 line-length = 120
-target-version = "py313"
+target-version = "py314"
 
 [tool.pyright]
 include = ["app", "tests"]
-pythonVersion = "3.13"
+pythonVersion = "3.14"
 typeCheckingMode = "strict"
 ```
 
 > **Phase 2 tooling considerations** (single source of truth — referenced from FRD §12):
 >
 > - `import-linter` is **not** in dev deps. Boundaries are enforced by code review. Reintroducing it is a Phase 2 option if the team grows beyond one squad.
-> - **Schemathesis** is opt-in via the `e2e` pytest marker (§9.3). Phase 2 promotes it to a required CI gate once the OpenAPI surface stabilises.
+> - **Schemathesis** is opt-in locally via the `e2e` pytest marker (§9.3) and runs as a dedicated required step in CI on every push and PR.
 
 ### 10.2 `Dockerfile`
 
@@ -649,7 +657,7 @@ typeCheckingMode = "strict"
 
 ```dockerfile
 # docker/Dockerfile
-FROM python:3.13-slim AS base
+FROM python:3.14-slim AS base
 RUN pip install --no-cache-dir uv
 
 WORKDIR /app
@@ -742,9 +750,10 @@ test-integration:
 test-contract:
 	uv run pytest tests/contract --no-cov
 
-# ``--jobs 1`` is mandatory: in-memory SQLite + StaticPool serialises on a
-# single shared connection, so Hurl's default parallel runs race on session
-# state. Trap on EXIT guarantees compose teardown even if up --wait fails.
+# ``--jobs 1`` is retained only to keep Hurl scenarios isolated from one another;
+# Postgres handles concurrent connections fine, so the old in-memory SQLite +
+# StaticPool serialisation reason is gone. Trap on EXIT guarantees compose
+# teardown even if up --wait fails.
 hurl-e2e:
 	@trap 'docker compose -f docker/docker-compose.yaml down' EXIT; \
 	docker compose -f docker/docker-compose.yaml up -d --wait task-service && \
@@ -778,10 +787,10 @@ Any step failing fails the build. Hurl reports (`reports/hurl/*.html`) are uploa
 
 ## 11. Performance, Concurrency, and Time
 
-> **Implements:** FRD §2.4 (UTC everywhere), §8 (concurrency model — single uvicorn worker).
+> **Implements:** FRD §2.4 (UTC everywhere), §8 (concurrency model — multi-worker via `WEB_CONCURRENCY`).
 
-- **Single uvicorn worker** assumed in Phase 1. The SQLite `:memory:` engine cannot be safely shared across workers without `StaticPool` + a single process, so this is enforced.
-- **`async def` routes** are used everywhere; the SQLModel repository is synchronous and runs in the default threadpool. Acceptable for an in-memory store. When Postgres lands, swap to `async` SQLAlchemy at the adapter boundary — domain and service layers are untouched.
+- **Multi-worker** is supported: `WEB_CONCURRENCY` (default 1) drives `uvicorn --workers`. It is safe on Postgres because the workflow-vs-status critical section is serialised by a transaction-scoped advisory lock (`pg_advisory_xact_lock`, §8.8) and the workflow seed is idempotent under that same guard — no shared in-process state survives across workers.
+- **`async def` end to end**: routes, services, and the SQLModel repository are all async (async SQLAlchemy over asyncpg) — the driver is natively async, so there is no threadpool offload. The domain and service layers took the swap as a mechanical `async`/`await` widening; no business logic moved.
 - **Event handlers** run via `BackgroundTasks`, i.e. after the HTTP response is returned to the client. They do not affect request latency.
 - **Time is UTC everywhere** (FRD §2.4). Three layers enforce this:
   1. **Container:** `ENV TZ=UTC` in the Dockerfile so library fallbacks to system time still produce UTC.

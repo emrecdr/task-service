@@ -26,6 +26,9 @@ jobs:
       - name: Sync dependencies
         run: uv sync --all-groups
 
+      - name: Dependency audit (pip-audit — known CVEs in the resolved env)
+        run: uv run pip-audit
+
       - name: Pre-commit (ruff, ruff-format, bandit, file hygiene, uv lock --check)
         run: uv run pre-commit run --all-files
 
@@ -35,6 +38,9 @@ jobs:
       - name: Pytest (unit + integration + contract, coverage gate)
         run: uv run pytest
 
+      - name: Schemathesis (property-based OpenAPI tests, ASGI in-process)
+        run: make schemathesis
+
       - name: Install Hurl
         run: |
           set -euo pipefail
@@ -43,7 +49,7 @@ jobs:
           sudo dpkg -i hurl.deb
           hurl --version
 
-      - name: Hurl E2E suite (--jobs 1 — Phase 1 StaticPool constraint)
+      - name: Hurl E2E suite (--jobs 1 — sequential scenario isolation)
         run: make hurl-e2e
 
       - name: Upload Hurl HTML report
@@ -53,3 +59,28 @@ jobs:
           name: hurl-reports
           path: reports/hurl/
           if-no-files-found: warn
+
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build production image
+        run: docker build -f docker/Dockerfile -t internal-task-service:ci .
+
+      - name: Trivy image scan (OS + installed packages)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: internal-task-service:ci
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Trivy filesystem scan (project dependencies + config)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"

@@ -36,7 +36,7 @@ jsonpath "$.error.code" == "read_only_field"
 jsonpath "$.error.details.field" == "created_at"
 
 # PATCH to non-existent id → 404.
-PATCH {{base_url}}/v1/tasks/9999999
+PATCH {{base_url}}/v1/tasks/00000000-0000-0000-0000-000000000000
 Content-Type: application/json
 { "priority": 1 }
 HTTP 404

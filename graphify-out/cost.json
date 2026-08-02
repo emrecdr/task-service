@@ -31,8 +31,14 @@
       "output_tokens": 0,
       "files": 61,
       "note": "incremental update post workflow-feature; host-agent extraction"
+    },
+    {
+      "date": "2026-07-29T19:04:58.650520+00:00",
+      "input_tokens": 145207,
+      "output_tokens": 0,
+      "files": 9
     }
   ],
-  "total_input_tokens": 590996,
+  "total_input_tokens": 736203,
   "total_output_tokens": 34236
 }

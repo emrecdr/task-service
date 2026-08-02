@@ -159,7 +159,7 @@ Dead compatibility code creates confusion, false sense of completion, and mainte
 ### Correct Approach
 
 - Clean, modern implementation using current patterns
-- Latest Python 3.13+ features (PEP 695 type syntax, `T | None`, `list[int]`)
+- Latest Python 3.14+ features (stdlib `uuid.uuid7()`, `compression.zstd`, PEP 695 type syntax, `T | None`, `list[int]`)
 - FastAPI (lifespan, `Annotated` deps), Pydantic v2 (`ConfigDict`, `field_validator`), SQLModel best practices
 - If the project has external API consumers, coordinate breaking changes — but no internal shims
 

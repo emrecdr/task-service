@@ -21,10 +21,10 @@ async def test_put_full_replace_returns_200(client: AsyncClient, create_task: Cr
 
 async def test_put_unknown_id_returns_404(client: AsyncClient) -> None:
     r = await client.put(
-        "/v1/tasks/99999",
+        "/v1/tasks/00000000-0000-0000-0000-000000000000",
         json={"title": "x", "priority": 1},
     )
-    assert_error(r, 404, ErrorCode.TASK_NOT_FOUND, details={"id": 99999})
+    assert_error(r, 404, ErrorCode.TASK_NOT_FOUND, details={"id": "00000000-0000-0000-0000-000000000000"})
 
 
 async def test_put_self_title_case_variant_succeeds(client: AsyncClient, create_task: CreateTask) -> None:

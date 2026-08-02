@@ -1,8 +1,11 @@
-from app.core.constants import INT64_MAX
 from app.core.errors import ErrorCode
 from httpx import AsyncClient
 
 from tests.conftest import assert_error
+
+# A well-formed UUID that will never exist — for 404 (not-found) paths. Distinct from a
+# malformed path segment, which is rejected as 422 by UUID validation.
+_MISSING_ID = "00000000-0000-0000-0000-000000000000"
 
 
 async def test_get_round_trip_returns_200(client: AsyncClient) -> None:
@@ -19,40 +22,11 @@ async def test_get_round_trip_returns_200(client: AsyncClient) -> None:
 
 
 async def test_get_unknown_id_returns_404_envelope(client: AsyncClient) -> None:
-    r = await client.get("/v1/tasks/99999")
-    err = assert_error(r, 404, ErrorCode.TASK_NOT_FOUND, details={"id": 99999})
+    r = await client.get(f"/v1/tasks/{_MISSING_ID}")
+    err = assert_error(r, 404, ErrorCode.TASK_NOT_FOUND, details={"id": _MISSING_ID})
     assert "message" in err
 
 
-async def test_get_non_integer_id_returns_422(client: AsyncClient) -> None:
-    r = await client.get("/v1/tasks/not-an-int")
-    assert_error(r, 422, ErrorCode.VALIDATION_ERROR)
-
-
-OVERFLOW_TASK_ID = INT64_MAX + 1
-
-
-async def test_get_overflow_id_returns_422(client: AsyncClient) -> None:
-    r = await client.get(f"/v1/tasks/{OVERFLOW_TASK_ID}")
-    assert_error(r, 422, ErrorCode.VALIDATION_ERROR)
-
-
-async def test_delete_overflow_id_returns_422(client: AsyncClient) -> None:
-    r = await client.delete(f"/v1/tasks/{OVERFLOW_TASK_ID}")
-    assert_error(r, 422, ErrorCode.VALIDATION_ERROR)
-
-
-async def test_put_overflow_id_returns_422(client: AsyncClient) -> None:
-    r = await client.put(
-        f"/v1/tasks/{OVERFLOW_TASK_ID}",
-        json={"title": "x", "priority": 1},
-    )
-    assert_error(r, 422, ErrorCode.VALIDATION_ERROR)
-
-
-async def test_patch_overflow_id_returns_422(client: AsyncClient) -> None:
-    r = await client.patch(
-        f"/v1/tasks/{OVERFLOW_TASK_ID}",
-        json={"title": "x"},
-    )
+async def test_get_non_uuid_id_returns_422(client: AsyncClient) -> None:
+    r = await client.get("/v1/tasks/not-a-uuid")
     assert_error(r, 422, ErrorCode.VALIDATION_ERROR)

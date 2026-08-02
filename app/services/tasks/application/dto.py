@@ -1,10 +1,10 @@
-from datetime import datetime
+import uuid
 from typing import Annotated, Any, Final, Self
 
-from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.core.constants import DEFAULT_LIST_LIMIT, INT64_MAX, MAX_LIST_LIMIT, OrderDirection
-from app.core.datetime_utils import iso_z
+from app.core.datetime_utils import IsoUtcDatetime
 from app.services.tasks.constants import (
     DESCRIPTION_MAX_LENGTH,
     PRIORITY_MAX,
@@ -67,16 +67,12 @@ class TaskPatch(BaseModel):
 class TaskResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    id: int
+    id: uuid.UUID
     title: str
     description: str | None
     status: str
     priority: int
-    created_at: datetime
-
-    @field_serializer("created_at")
-    def _serialize_created_at(self, dt: datetime) -> str:
-        return iso_z(dt)
+    created_at: IsoUtcDatetime
 
 
 class TaskListResponse(BaseModel):
@@ -97,7 +93,7 @@ class TransitionOption(BaseModel):
 
 
 class TaskTransitionsResponse(BaseModel):
-    task_id: int
+    task_id: uuid.UUID
     status: str
     transitions: list[TransitionOption]
 
@@ -119,5 +115,5 @@ class TaskListParams(BaseModel):
         description="Sort direction.",
     )
     limit: int = Field(default=DEFAULT_LIST_LIMIT, ge=1, le=MAX_LIST_LIMIT)
-    # SQLite binds OFFSET as signed int64; values beyond it overflow the driver.
+    # asyncpg binds OFFSET as a signed int64; values beyond it overflow the driver.
     offset: int = Field(default=0, ge=0, le=INT64_MAX)

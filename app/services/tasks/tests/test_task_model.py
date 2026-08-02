@@ -1,3 +1,5 @@
+import uuid
+
 import pytest
 
 from app.services.tasks.domain.models import Task
@@ -130,6 +132,7 @@ class TestSnapshot:
 
     def test_snapshot_preserves_id_when_set(self) -> None:
         original = _new()
-        original.id = 42
+        fixed_id = uuid.UUID("11111111-1111-1111-1111-111111111111")
+        original.id = fixed_id
         snapshot = original.snapshot()
-        assert snapshot.id == 42
+        assert snapshot.id == fixed_id

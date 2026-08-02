@@ -18,5 +18,5 @@ async def test_delete_returns_204_then_get_404(client: AsyncClient) -> None:
 
 
 async def test_delete_unknown_id_returns_404(client: AsyncClient) -> None:
-    r = await client.delete("/v1/tasks/99999")
+    r = await client.delete("/v1/tasks/00000000-0000-0000-0000-000000000000")
     assert_error(r, 404, ErrorCode.TASK_NOT_FOUND)

@@ -1,15 +1,15 @@
-from collections.abc import Generator
+from collections.abc import AsyncGenerator
 from typing import Annotated
 
 from fastapi import Depends, Request
-from sqlmodel import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import session_factory
 from app.core.event_bus import EventBus
 
 
-def get_session() -> Generator[Session]:
-    with session_factory() as session:
+async def get_session() -> AsyncGenerator[AsyncSession]:
+    async with session_factory() as session:
         yield session
 
 
@@ -20,5 +20,5 @@ def get_event_bus(request: Request) -> EventBus:
     return bus
 
 
-SessionDep = Annotated[Session, Depends(get_session)]
+SessionDep = Annotated[AsyncSession, Depends(get_session)]
 EventBusDep = Annotated[EventBus, Depends(get_event_bus)]

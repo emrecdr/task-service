@@ -1,3 +1,5 @@
+import uuid
+
 from app.core.errors import ErrorCode
 from httpx import AsyncClient
 
@@ -8,7 +10,7 @@ async def test_create_returns_201_with_envelope(client: AsyncClient) -> None:
     r = await client.post("/v1/tasks", json={"title": "ship plan", "priority": 4})
     assert r.status_code == 201
     body = r.json()
-    assert body["id"] > 0
+    assert uuid.UUID(body["id"]).version == 7  # public id is a UUIDv7
     assert body["title"] == "ship plan"
     assert body["status"] == "new"
     assert body["priority"] == 4

@@ -1,3 +1,4 @@
+import uuid
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -10,7 +11,7 @@ class TaskRepositoryInterface(ABC):
     """``replace`` and ``patch`` return ``(snapshot_before, row_after)`` from one fetch."""
 
     @abstractmethod
-    def add(
+    async def add(
         self,
         *,
         title: str,
@@ -20,10 +21,10 @@ class TaskRepositoryInterface(ABC):
     ) -> Task: ...
 
     @abstractmethod
-    def get(self, task_id: int) -> Task: ...
+    async def get(self, task_id: uuid.UUID) -> Task: ...
 
     @abstractmethod
-    def list(
+    async def list(
         self,
         *,
         statuses: list[str] | None,
@@ -34,9 +35,9 @@ class TaskRepositoryInterface(ABC):
     ) -> tuple[list[Task], int]: ...
 
     @abstractmethod
-    def replace(
+    async def replace(
         self,
-        task_id: int,
+        task_id: uuid.UUID,
         *,
         title: str,
         description: str | None,
@@ -45,10 +46,10 @@ class TaskRepositoryInterface(ABC):
     ) -> tuple[Task, Task]: ...
 
     @abstractmethod
-    def patch(self, task_id: int, **fields: Any) -> tuple[Task, Task]: ...
+    async def patch(self, task_id: uuid.UUID, **fields: Any) -> tuple[Task, Task]: ...
 
     @abstractmethod
-    def delete(self, task_id: int) -> Task: ...
+    async def delete(self, task_id: uuid.UUID) -> Task: ...
 
     @abstractmethod
-    def count_by_status(self) -> dict[str, int]: ...
+    async def count_by_status(self) -> dict[str, int]: ...

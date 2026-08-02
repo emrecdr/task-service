@@ -1,14 +1,22 @@
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Final
 
-from sqlalchemy import JSON, Column, func, select
-from sqlmodel import Field, Session, SQLModel, col
+from sqlalchemy import Column, DateTime, func, select, text
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import Field, SQLModel, col
 
 from app.core.datetime_utils import ensure_utc
 from app.core.errors import AppError
 from app.services.workflows.domain.definition import Workflow
 from app.services.workflows.interfaces import StoredWorkflow, WorkflowRepositoryInterface
 from app.services.workflows.serialization import workflow_from_document, workflow_to_document
+
+# Postgres advisory-lock key serialising the "workflow-definition vs task-status"
+# critical section (see WorkflowEngine / the strand guard). Transaction-scoped, so it
+# releases at the span's single commit — this is what restores the atomicity the
+# single shared connection would otherwise provide for free.
+_WORKFLOW_GUARD_KEY: Final[int] = 0x776B666C  # 'wkfl'
 
 
 class WorkflowRecord(SQLModel, table=True):
@@ -19,34 +27,47 @@ class WorkflowRecord(SQLModel, table=True):
 
     id: int | None = Field(default=None, primary_key=True)
     version: int = Field(index=True, unique=True)
-    document: dict[str, Any] = Field(sa_column=Column(JSON, nullable=False))
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC), nullable=False)
+    document: dict[str, Any] = Field(sa_column=Column(JSONB, nullable=False))
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        sa_column=Column(DateTime(timezone=True), nullable=False),  # timestamptz
+    )
 
 
 class SQLModelWorkflowRepository(WorkflowRepositoryInterface):
-    def __init__(self, session: Session) -> None:
+    def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    def get_active(self) -> StoredWorkflow:
-        record = self._session.scalars(
+    async def acquire_workflow_guard(self) -> None:
+        """Take the transaction-scoped advisory lock that serialises workflow-definition
+        changes against status-changing task writes (and workflow writes against each
+        other). Released automatically when this session's transaction commits/rolls back."""
+        await self._session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _WORKFLOW_GUARD_KEY})
+
+    async def get_active(self) -> StoredWorkflow:
+        result = await self._session.scalars(
             select(WorkflowRecord).order_by(col(WorkflowRecord.version).desc()).limit(1)
-        ).first()
+        )
+        record = result.first()
         if record is None:
             # Broken startup invariant (seed did not run), not a client error.
             raise AppError(detail="No active workflow definition is stored.")
         return StoredWorkflow(
             workflow=workflow_from_document(record.document),
+            document=record.document,
             version=record.version,
             created_at=ensure_utc(record.created_at),
         )
 
-    def replace_active(self, workflow: Workflow) -> StoredWorkflow:
-        highest = self._session.scalar(select(func.max(WorkflowRecord.version)))
-        record = WorkflowRecord(version=(highest or 0) + 1, document=workflow_to_document(workflow))
+    async def replace_active(self, workflow: Workflow) -> StoredWorkflow:
+        highest = await self._session.scalar(select(func.max(WorkflowRecord.version)))
+        document = workflow_to_document(workflow)
+        record = WorkflowRecord(version=(highest or 0) + 1, document=document)
         self._session.add(record)
-        self._session.commit()
+        await self._session.commit()
         return StoredWorkflow(
             workflow=workflow,
+            document=document,
             version=record.version,
             created_at=ensure_utc(record.created_at),
         )

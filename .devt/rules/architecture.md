@@ -211,7 +211,7 @@ app.add_middleware(
 ### Dockerfile (multi-stage with uv)
 
 ```dockerfile
-FROM python:3.13-slim AS builder
+FROM python:3.14-slim AS builder
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
@@ -219,7 +219,7 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY src/ src/
 RUN uv sync --frozen --no-dev
 
-FROM python:3.13-slim AS runtime
+FROM python:3.14-slim AS runtime
 WORKDIR /app
 COPY --from=builder /app/.venv .venv
 ENV PATH="/app/.venv/bin:$PATH"
@@ -231,7 +231,7 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
 **Key rules:**
 
-- Use `python:3.13-slim` (not alpine — compiled package issues)
+- Use `python:3.14-slim` (not alpine — compiled package issues)
 - Multi-stage builds: dependencies cached separately from source
 - Run as non-root user
 - `--frozen` ensures lockfile is respected
@@ -255,10 +255,10 @@ All project configuration lives in `pyproject.toml` — no `setup.cfg`, `setup.p
 [project]
 name = "myapp"
 version = "0.1.0"
-requires-python = ">=3.13"
+requires-python = ">=3.14"
 
 [tool.ruff]
-target-version = "py313"
+target-version = "py314"
 line-length = 120
 
 [tool.ruff.lint]
@@ -269,7 +269,7 @@ quote-style = "double"
 
 [tool.pyright]
 include = ["app", "tests"]
-pythonVersion = "3.13"
+pythonVersion = "3.14"
 typeCheckingMode = "strict"
 
 [tool.pytest.ini_options]
