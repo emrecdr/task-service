@@ -69,7 +69,7 @@ jobs:
         run: docker build -f docker/Dockerfile -t internal-task-service:ci .
 
       - name: Trivy image scan (OS + installed packages)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: internal-task-service:ci
           severity: CRITICAL,HIGH
@@ -77,7 +77,7 @@ jobs:
           exit-code: "1"
 
       - name: Trivy filesystem scan (project dependencies + config)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
