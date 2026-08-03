@@ -60,6 +60,47 @@ jobs:
           path: reports/hurl/
           if-no-files-found: warn
 
+  migrations:
+    # Alembic owns the production schema, but the pytest suite builds its schema from
+    # SQLModel.metadata (create_all) — so a migration that drifts from the models would
+    # never be caught by tests. This job builds the schema the way prod does and gates on drift.
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: taskservice
+          POSTGRES_PASSWORD: taskservice
+          POSTGRES_DB: taskservice
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U taskservice -d taskservice"
+          --health-interval 3s --health-timeout 2s --health-retries 20
+    env:
+      DATABASE_URL: postgresql+asyncpg://taskservice:taskservice@localhost:5432/taskservice
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --all-groups
+
+      - name: Apply migrations (build the schema from migrations, as prod does)
+        run: uv run alembic upgrade head
+
+      - name: Drift gate — models must match migrations
+        run: uv run alembic check
+
+      - name: Migration round-trip (downgrade to base, then re-upgrade)
+        run: |
+          uv run alembic downgrade base
+          uv run alembic upgrade head
+
   security-scan:
     runs-on: ubuntu-latest
     steps:
