@@ -167,7 +167,7 @@ Carried forward from PRD §10 — these define the operating envelope for Phase 
 
 - Python 3.14+
 - [`uv`](https://docs.astral.sh/uv/) (the only supported package manager — do not run `pip` directly)
-- Docker + Docker Compose (only required for the container path and Hurl E2E)
+- Docker + Docker Compose — the `make compose-up` run path and Hurl E2E, and the easiest way to provide the PostgreSQL the app now requires
 - Hurl 4+ (only required for `make hurl-e2e`; CI pins **8.0.1** — see `.github/workflows/ci.yaml`)
 
 ### Local install
@@ -181,23 +181,43 @@ cp .env.example .env # one-time: seed the base config file
 
 `cp .env.example .env` is the **manual** step that gives the app its working defaults. `.env.example` is the only `.env*` file checked into git; copying it to `.env` is what `pydantic-settings` reads on startup. (Per-environment override files like `.env.qa` are optional and explained in [§ Configuration](#configuration).)
 
-### Run locally (no Docker)
+### Run it (simplest — full stack in Docker)
+
+The app now requires **PostgreSQL**. `make compose-up` brings up the whole stack —
+Postgres, the app, and `alembic upgrade head` — in one healthcheck-gated command:
 
 ```bash
+make compose-up     # Postgres + app + migrations; app on :8000 (APP_PORT to override)
+make compose-logs   # tail logs
+make compose-down   # tear down (append `-v` in the compose command to drop the data volume)
+```
+
+Then open <http://localhost:8000/docs>, and confirm it's serving:
+
+```bash
+curl http://localhost:8000/readyz   # {"status":"ready"} once the DB round-trips
+```
+
+### Run the reload dev-server (no app container)
+
+For `uvicorn --reload`, provide a Postgres yourself, apply the schema, then run the server —
+the app no longer creates tables (Alembic owns the schema):
+
+```bash
+make migrate        # alembic upgrade head — create/upgrade the schema
 make run            # uvicorn --reload on :8000 (override with APP_PORT=9000 make run)
 ```
 
-Open <http://localhost:8000/docs> for the OpenAPI UI.
-
-### Run in Docker
+The default `DATABASE_URL` (in `.env`) expects Postgres on `localhost:5432` with
+`taskservice/taskservice/taskservice`. Start one any way you like — for example:
 
 ```bash
-make compose-up     # build image, start container, wait for healthcheck
-make compose-logs   # tail logs
-make compose-down   # tear down
+docker run --rm -p 5432:5432 -e POSTGRES_USER=taskservice \
+  -e POSTGRES_PASSWORD=taskservice -e POSTGRES_DB=taskservice postgres:17
 ```
 
-A fresh checkout to a running service is one command — `make compose-up` or `make run` — with no further setup beyond `uv` and Docker being installed.
+— or point `DATABASE_URL` at an instance you already run. (The compose Postgres is
+internal-only and not reachable from the host, so it can't back `make run`.)
 
 ## Tests
 

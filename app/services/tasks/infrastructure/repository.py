@@ -70,7 +70,9 @@ class SQLModelTaskRepository(TaskRepositoryInterface):
         # ``order_by`` is a StrEnum whose value IS the column attribute name.
         sort_col = col(getattr(Task, order_by))
         ordered = sort_col.desc() if order_dir is OrderDirection.DESC else sort_col.asc()
-        items_stmt = base.order_by(ordered, col(Task.created_at).asc()).offset(offset).limit(limit)
+        # ``id`` (uuid7, time-ordered) is the final unique tiebreak so paging stays stable
+        # when ``priority`` and ``created_at`` both tie (e.g. bulk creates in the same tick).
+        items_stmt = base.order_by(ordered, col(Task.created_at).asc(), col(Task.id).asc()).offset(offset).limit(limit)
 
         items = list((await self._session.scalars(items_stmt)).all())
         total = int(await self._session.scalar(count_stmt) or 0)

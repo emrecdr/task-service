@@ -8,6 +8,8 @@ from app.core.errors import AppError, ErrorCode, register_exception_handlers
 from app.core.middleware import RequestIDMiddleware
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import TimeoutError as SATimeoutError
 
 from tests.conftest import assert_error
 
@@ -104,3 +106,25 @@ async def test_dev_duplicate_task_envelope_includes_integrity_cause(
     err = assert_error(r, 409, ErrorCode.DUPLICATE_TASK)
     assert err["details"].get("title") == "same"
     assert "IntegrityError" in err["details"].get("cause", "")
+
+
+async def test_pool_timeout_maps_to_503() -> None:
+    # Pool-checkout timeout (saturation) is a retryable infra failure → 503, not 500.
+    async with _crash_client(SATimeoutError("QueuePool limit reached")) as c:
+        r = await c.get("/boom")
+    err = assert_error(r, 503, ErrorCode.SERVICE_UNAVAILABLE)
+    assert "message" in err
+
+
+async def test_operational_error_maps_to_503() -> None:
+    async with _crash_client(OperationalError("SELECT 1", None, Exception("connection reset"))) as c:
+        r = await c.get("/boom")
+    assert_error(r, 503, ErrorCode.SERVICE_UNAVAILABLE)
+
+
+async def test_db_unavailable_dev_envelope_surfaces_cause(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "app_env", Environment.DEV)
+    async with _crash_client(SATimeoutError("pool exhausted")) as c:
+        r = await c.get("/boom")
+    err = assert_error(r, 503, ErrorCode.SERVICE_UNAVAILABLE)
+    assert "TimeoutError" in err["details"].get("cause", "")

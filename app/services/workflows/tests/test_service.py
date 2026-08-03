@@ -24,7 +24,7 @@ class FakeWorkflowRepo(WorkflowRepositoryInterface):
     def __init__(self) -> None:
         self.stored: list[StoredWorkflow] = []
 
-    async def acquire_workflow_guard(self) -> None:
+    async def acquire_workflow_guard(self, *, shared: bool = False) -> None:
         return None
 
     async def get_active(self) -> StoredWorkflow:

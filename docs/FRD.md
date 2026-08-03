@@ -164,9 +164,10 @@ Malformed JSON request bodies (which FastAPI would otherwise surface as a raw `4
 | Attempt to set server-owned field on PUT/PATCH (`id`, `created_at`) | `ReadOnlyFieldError`         | `422 Unprocessable Entity`  | `read_only_field`  |
 | Request body whose declared `Content-Length` exceeds the configured limit | (request-hardening middleware) | `413 Content Too Large`  | `payload_too_large` |
 | Handler exceeds the configured wall-clock budget                    | (request-hardening middleware) | `504 Gateway Timeout`     | `request_timeout`  |
+| Database unreachable / connection pool saturated (retryable)        | `sqlalchemy` `TimeoutError` / `OperationalError` | `503 Service Unavailable` | `service_unavailable` |
 | Anything else (truly unexpected)                                    | `Exception`                  | `500 Internal Server Error` | `internal_error`   |
 
-A single global FastAPI exception handler converts domain exceptions to the error envelope above. Stack traces are **never** included in production responses (controlled by `APP_ENV`). The `payload_too_large` and `request_timeout` responses are emitted by request-hardening middleware (`app/core/middleware.py`) via the same `ErrorEnvelope` builder, so their wire shape is identical even though they short-circuit before the handler path.
+A single global FastAPI exception handler converts domain exceptions to the error envelope above. Stack traces are **never** included in production responses (controlled by `APP_ENV`). The `payload_too_large` and `request_timeout` responses are emitted by request-hardening middleware (`app/core/middleware.py`) via the same `ErrorEnvelope` builder; `service_unavailable` (503) is mapped from SQLAlchemy pool-checkout `TimeoutError` / connection `OperationalError` by a dedicated exception handler so saturation fails fast and retryably. All share the identical wire shape.
 
 ## 5. Domain Event System
 

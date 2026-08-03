@@ -6,9 +6,12 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.core.constants import (
+    DEFAULT_DB_LOCK_TIMEOUT_MS,
     DEFAULT_DB_MAX_OVERFLOW,
     DEFAULT_DB_POOL_RECYCLE_SECONDS,
     DEFAULT_DB_POOL_SIZE,
+    DEFAULT_DB_POOL_TIMEOUT_SECONDS,
+    DEFAULT_DB_STATEMENT_TIMEOUT_MS,
     DEFAULT_MAX_REQUEST_BODY_BYTES,
     DEFAULT_REQUEST_TIMEOUT_SECONDS,
     Environment,
@@ -58,6 +61,14 @@ class Settings(BaseSettings):
     db_pool_size: int = Field(default=DEFAULT_DB_POOL_SIZE, ge=1)
     db_max_overflow: int = Field(default=DEFAULT_DB_MAX_OVERFLOW, ge=0)
     db_pool_recycle_seconds: int = Field(default=DEFAULT_DB_POOL_RECYCLE_SECONDS, ge=-1)
+
+    # Server-enforced DB timeouts (kept below ``request_timeout_seconds``): a slow query,
+    # lock wait, or pool saturation fails fast (mapped to 503) and frees the connection
+    # rather than pinning a worker. ``DB_STATEMENT_TIMEOUT_MS``/``DB_LOCK_TIMEOUT_MS=0`` disable
+    # the Postgres GUC; ``DB_POOL_TIMEOUT_SECONDS`` bounds waiting for a pooled connection.
+    db_statement_timeout_ms: int = Field(default=DEFAULT_DB_STATEMENT_TIMEOUT_MS, ge=0)
+    db_lock_timeout_ms: int = Field(default=DEFAULT_DB_LOCK_TIMEOUT_MS, ge=0)
+    db_pool_timeout_seconds: float = Field(default=DEFAULT_DB_POOL_TIMEOUT_SECONDS, gt=0)
 
     @field_validator("log_level")
     @classmethod

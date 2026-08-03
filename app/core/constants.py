@@ -34,3 +34,10 @@ ZSTD_MINIMUM_SIZE_BYTES: Final[int] = 500
 DEFAULT_DB_POOL_SIZE: Final[int] = 5
 DEFAULT_DB_MAX_OVERFLOW: Final[int] = 10
 DEFAULT_DB_POOL_RECYCLE_SECONDS: Final[int] = -1
+
+# Server-enforced DB timeouts (ms) + pool-checkout timeout (s), kept below the request
+# budget so a slow query, lock wait, or pool saturation fails fast (→ 503) and frees the
+# connection instead of pinning a worker for the whole request. ``0`` disables the GUC.
+DEFAULT_DB_STATEMENT_TIMEOUT_MS: Final[int] = 10_000
+DEFAULT_DB_LOCK_TIMEOUT_MS: Final[int] = 5_000
+DEFAULT_DB_POOL_TIMEOUT_SECONDS: Final[float] = 5.0

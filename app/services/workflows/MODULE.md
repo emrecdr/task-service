@@ -77,11 +77,13 @@ All under `settings.api_prefix` (default `/v1`):
 The **strand guard**: a definition that would leave existing tasks in states
 it no longer defines is rejected with 409 `workflow_states_in_use`, listing
 each offending state with its live task count. The usage-count → check →
-commit span is serialised by a Postgres transaction-scoped advisory lock
-(`pg_advisory_xact_lock`, acquired via `acquire_workflow_guard()` as the
-critical section's first db op and released at the span's single commit), so
-no concurrent status-changing task write or workflow replace can interleave —
-a guarantee that now holds across multiple workers.
+commit span is guarded by a Postgres transaction-scoped **reader/writer**
+advisory lock (`acquire_workflow_guard(shared=...)`, released at the span's
+single commit): a workflow replace takes the EXCLUSIVE `pg_advisory_xact_lock`,
+which waits for and blocks all in-flight task writes, so no status change can
+interleave the usage-count → check → commit. Task-status writes take the SHARED
+`pg_advisory_xact_lock_shared` — they only *read* the definition, so they run
+concurrently across workers instead of serialising against each other.
 
 ## Errors (FRD §4)
 

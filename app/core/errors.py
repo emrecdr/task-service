@@ -8,6 +8,8 @@ from fastapi.exception_handlers import http_exception_handler as default_http_ex
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import TimeoutError as SATimeoutError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.core.config import settings
@@ -26,6 +28,7 @@ class ErrorCode(StrEnum):
     WORKFLOW_STATES_IN_USE = "workflow_states_in_use"
     PAYLOAD_TOO_LARGE = "payload_too_large"
     REQUEST_TIMEOUT = "request_timeout"
+    SERVICE_UNAVAILABLE = "service_unavailable"
     INTERNAL_ERROR = "internal_error"
 
 
@@ -177,6 +180,24 @@ def register_exception_handlers(app: FastAPI) -> None:
             message="Request validation failed.",
             details={"errors": errors},
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        )
+
+    @app.exception_handler(SATimeoutError)
+    @app.exception_handler(OperationalError)
+    async def _db_unavailable_handler(request: Request, exc: Exception) -> JSONResponse:  # pyright: ignore[reportUnusedFunction]
+        # Pool-checkout timeout (saturation) or a lost / timed-out DB connection — a *retryable*
+        # infrastructure failure, so 503 (not a 500) tells clients and load balancers to back off
+        # and retry. Runs in ExceptionMiddleware, so RequestIDMiddleware still echoes the id.
+        logger.warning("db_unavailable", exc_info=exc)
+        details: dict[str, Any] = {}
+        if settings.expose_stack_traces:
+            details["cause"] = f"{type(exc).__name__}: {exc}"
+        return build_error_response(
+            request=request,
+            code=ErrorCode.SERVICE_UNAVAILABLE,
+            message="The service is temporarily unable to reach its database. Retry shortly.",
+            details=details,
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         )
 
     @app.exception_handler(Exception)

@@ -17,6 +17,11 @@ from app.services.workflows.serialization import workflow_from_document, workflo
 # releases at the span's single commit — this is what restores the atomicity the
 # single shared connection would otherwise provide for free.
 _WORKFLOW_GUARD_KEY: Final[int] = 0x776B666C  # 'wkfl'
+# Reader/writer forms of the guard: task-status writes take SHARED (run concurrently — they
+# only read the definition); workflow replacement + seed take EXCLUSIVE (waits for / blocks
+# shared holders). Static clauses so no SQL is ever string-built.
+_EXCLUSIVE_GUARD_SQL: Final = text("SELECT pg_advisory_xact_lock(:k)")
+_SHARED_GUARD_SQL: Final = text("SELECT pg_advisory_xact_lock_shared(:k)")
 
 
 class WorkflowRecord(SQLModel, table=True):
@@ -38,11 +43,11 @@ class SQLModelWorkflowRepository(WorkflowRepositoryInterface):
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def acquire_workflow_guard(self) -> None:
-        """Take the transaction-scoped advisory lock that serialises workflow-definition
-        changes against status-changing task writes (and workflow writes against each
-        other). Released automatically when this session's transaction commits/rolls back."""
-        await self._session.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _WORKFLOW_GUARD_KEY})
+    async def acquire_workflow_guard(self, *, shared: bool = False) -> None:
+        """Take the transaction-scoped advisory guard — SHARED for task-status writes (they
+        run concurrently) or EXCLUSIVE for workflow replacement + seed. Released automatically
+        when this session's transaction commits or rolls back."""
+        await self._session.execute(_SHARED_GUARD_SQL if shared else _EXCLUSIVE_GUARD_SQL, {"k": _WORKFLOW_GUARD_KEY})
 
     async def get_active(self) -> StoredWorkflow:
         result = await self._session.scalars(

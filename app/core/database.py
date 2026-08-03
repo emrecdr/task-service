@@ -28,6 +28,15 @@ def _pool_options(poolclass: type[Pool] | None) -> dict[str, Any]:
         "pool_size": settings.db_pool_size,
         "max_overflow": settings.db_max_overflow,
         "pool_recycle": settings.db_pool_recycle_seconds,
+        # Fail a saturated pool fast (→ 503) instead of blocking for the whole request budget.
+        "pool_timeout": settings.db_pool_timeout_seconds,
+        # Server-side ceilings so a slow query / lock wait can't pin a connection indefinitely.
+        "connect_args": {
+            "server_settings": {
+                "statement_timeout": str(settings.db_statement_timeout_ms),
+                "lock_timeout": str(settings.db_lock_timeout_ms),
+            }
+        },
     }
 
 

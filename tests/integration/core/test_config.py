@@ -76,3 +76,20 @@ def test_settings_db_pool_validation() -> None:
         Settings(db_max_overflow=-1)
     with pytest.raises(ValidationError, match="greater than or equal to -1"):
         Settings(db_pool_recycle_seconds=-2)
+
+
+def test_settings_db_timeout_validation() -> None:
+    s = Settings(db_statement_timeout_ms=8000, db_lock_timeout_ms=3000, db_pool_timeout_seconds=4.0)
+    assert s.db_statement_timeout_ms == 8000
+    assert s.db_lock_timeout_ms == 3000
+    assert s.db_pool_timeout_seconds == 4.0
+
+    defaults = Settings()
+    assert defaults.db_statement_timeout_ms == 10_000
+    assert defaults.db_lock_timeout_ms == 5_000
+    assert defaults.db_pool_timeout_seconds == 5.0
+
+    with pytest.raises(ValidationError, match="greater than or equal to 0"):
+        Settings(db_statement_timeout_ms=-1)
+    with pytest.raises(ValidationError, match="greater than 0"):
+        Settings(db_pool_timeout_seconds=0)

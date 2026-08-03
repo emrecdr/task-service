@@ -38,11 +38,12 @@ class TaskService:
         return WorkflowEngine((await self._workflows.get_active()).workflow)
 
     async def _guarded_engine(self) -> WorkflowEngine:
-        """Acquire the workflow advisory guard, then read the active definition under it.
-        The single seam every status-changing path enters through, so the read-check-write
-        span stays atomic against a concurrent ``PUT /v1/workflow`` even over the async pool.
-        """
-        await self._workflows.acquire_workflow_guard()
+        """Acquire the workflow advisory guard SHARED (task writes only read the definition,
+        so they run concurrently), then read the active definition under it. The single seam
+        every status-changing path enters through: the shared lock keeps the read-check-write
+        atomic against a concurrent ``PUT /v1/workflow`` (which takes the exclusive lock)
+        without serialising task writes against each other."""
+        await self._workflows.acquire_workflow_guard(shared=True)
         return await self._engine()
 
     async def create(

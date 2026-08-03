@@ -24,9 +24,15 @@ class WorkflowRepositoryInterface(ABC):
     """Append-only storage: the active definition is the highest version."""
 
     @abstractmethod
-    async def acquire_workflow_guard(self) -> None:
-        """Serialise workflow-definition changes against status-changing task writes
-        (transaction-scoped advisory lock; released at the span's commit)."""
+    async def acquire_workflow_guard(self, *, shared: bool = False) -> None:
+        """Serialise the workflow-definition-vs-task-status critical section with a
+        transaction-scoped advisory lock (released at the span's commit).
+
+        ``shared=True`` (task-status writes) takes a SHARED lock — many run concurrently
+        since they only *read* the active definition. ``shared=False`` (``PUT /v1/workflow``
+        and the seed) takes the EXCLUSIVE lock, which waits for all shared holders and blocks
+        new ones, so a redefinition still mutually excludes every in-flight task write (the
+        anti-stranding invariant) without task writes serialising against each other."""
 
     @abstractmethod
     async def get_active(self) -> StoredWorkflow: ...

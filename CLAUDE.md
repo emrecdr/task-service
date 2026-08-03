@@ -58,7 +58,7 @@ Project is managed by **uv** (Python 3.14). Always run commands through `uv run`
 ```
 uv sync                                  # install runtime + dev deps from uv.lock
 uv run pre-commit install                # one-time, wires local hooks
-uv run uvicorn app.main:app --reload     # local dev server (when app/main.py exists)
+uv run uvicorn app.main:app --reload     # local dev server — reload (needs Postgres + alembic upgrade head)
 
 uv run pytest                            # full test run with coverage gate (--cov-fail-under=80)
 uv run pytest app/services/tasks/tests   # unit tests only (fast, no FastAPI/DB)
@@ -114,7 +114,7 @@ The `Task` SQLModel row **is** the domain entity (`table=True`). There is no sep
 
 ## Postgres specifics
 
-Persistence is **PostgreSQL** via async SQLAlchemy (`create_async_engine` + `async_sessionmaker(class_=AsyncSession, expire_on_commit=False)`) over **asyncpg**. `app/core/database.py` exposes a re-bindable `configure(url, *, poolclass=None)` + `get_sessionmaker()` so tests (testcontainers) can point the app at a throwaway Postgres after import; `expire_on_commit=False` is load-bearing (post-commit `snapshot()` reads must not lazy-refresh). **Alembic owns the production schema** (`alembic upgrade head` runs at deploy via the Docker entrypoint, before uvicorn) — the lifespan no longer creates tables; it seeds the workflow row and disposes the engine on shutdown. Tests build the schema via the conftest fixture (`init_schema()` + TRUNCATE + reseed). Atomicity of the workflow-vs-status critical section is held by a transaction-scoped advisory lock (`pg_advisory_xact_lock`, acquired via `acquire_workflow_guard()`), which also makes multi-worker (`WEB_CONCURRENCY`) safe. See TIS §7.1, §8.7, §8.8.
+Persistence is **PostgreSQL** via async SQLAlchemy (`create_async_engine` + `async_sessionmaker(class_=AsyncSession, expire_on_commit=False)`) over **asyncpg**. `app/core/database.py` exposes a re-bindable `configure(url, *, poolclass=None)` + `get_sessionmaker()` so tests (testcontainers) can point the app at a throwaway Postgres after import; `expire_on_commit=False` is load-bearing (post-commit `snapshot()` reads must not lazy-refresh). **Alembic owns the production schema** (`alembic upgrade head` runs at deploy via the Docker entrypoint, before uvicorn) — the lifespan no longer creates tables; it seeds the workflow row and disposes the engine on shutdown. Tests build the schema via the conftest fixture (`init_schema()` + TRUNCATE + reseed). Atomicity of the workflow-vs-status critical section is held by a transaction-scoped **reader/writer** advisory lock via `acquire_workflow_guard(shared=...)`: task-status writes take the SHARED form (`pg_advisory_xact_lock_shared`, so they run concurrently across workers), while `PUT /v1/workflow` + seed take the EXCLUSIVE form — making multi-worker (`WEB_CONCURRENCY`) both safe and scalable. See TIS §7.1, §8.7, §8.8.
 
 ## Test layout — the split rule
 
