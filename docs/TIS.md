@@ -60,14 +60,19 @@ task-service/
 ├── app/
 │   ├── main.py                       # FastAPI app factory + lifespan
 │   ├── core/                         # Cross-cutting concerns
+│   │   ├── compression.py            # ZstdMiddleware — negotiated zstd response compression (PEP 784)
 │   │   ├── config.py                 # pydantic-settings Settings (env-aware)
-│   │   ├── constants.py              # AppEnv enum, LogLevel mapping
+│   │   ├── constants.py              # Environment enum + list/int64/DB-pool/zstd bounds
+│   │   ├── database.py               # Async Postgres engine + async_sessionmaker (asyncpg) + pool/probe
+│   │   ├── datetime_utils.py         # ensure_utc / iso_z / IsoUtcDatetime
+│   │   ├── dependencies.py           # Core DI providers (session, event bus)
+│   │   ├── diagnose.py               # /diagnose ops endpoint (dev-gated, secret-masked)
 │   │   ├── errors.py                 # ErrorCode enum + AppError hierarchy + handler registration
 │   │   ├── event_bus.py              # In-process Event Bus + base Event
-│   │   ├── logging.py                # structlog setup (env-aware) + RequestIDMiddleware
 │   │   ├── health.py                 # /healthz, /readyz handlers
-│   │   ├── database.py               # Async Postgres engine + async_sessionmaker (asyncpg)
-│   │   └── dependencies.py           # Core DI providers (session, event bus)
+│   │   ├── logging.py                # structlog setup (env-aware)
+│   │   ├── middleware.py             # RequestID, security headers, body-size + timeout limits
+│   │   └── openapi_responses.py      # ErrorEnvelope schema + shared error response specs
 │   └── services/
 │       └── tasks/
 │           ├── __init__.py
@@ -75,6 +80,7 @@ task-service/
 │           ├── constants.py          # TaskSortField, field bounds
 │           ├── errors.py             # DuplicateTaskError, TaskNotFoundError, …
 │           ├── interfaces.py         # TaskRepositoryInterface (ABC) at feature root
+│           ├── MODULE.md             # Feature-internal doc: invariants, error table, conventions
 │           ├── api/
 │           │   ├── __init__.py
 │           │   └── v1/
@@ -102,6 +108,7 @@ task-service/
 │           ├── errors.py             # WorkflowValidationError, WorkflowStatesInUseError
 │           ├── interfaces.py         # WorkflowRepositoryInterface (ABC) + StoredWorkflow
 │           ├── serialization.py      # workflow_to_document / workflow_from_document (collect-all-errors)
+│           ├── MODULE.md             # Feature-internal doc: strand guard, engine seam, conventions
 │           ├── api/v1/router.py      # GET/PUT /v1/workflow
 │           ├── application/
 │           │   ├── service.py        # WorkflowService (validate → strand guard → append version)
@@ -109,6 +116,7 @@ task-service/
 │           ├── domain/
 │           │   ├── models.py         # State, Transition value objects (open meta model)
 │           │   ├── definition.py     # Workflow: states + transition table + reachability
+│           │   ├── engine.py         # WorkflowEngine: resolve_entry / check_move / legal_moves
 │           │   └── events.py         # WorkflowUpdated
 │           ├── infrastructure/
 │           │   ├── repository.py     # WorkflowRecord (JSONB column) + SQLModelWorkflowRepository
@@ -210,12 +218,12 @@ Each layer answers exactly one question. Imports always flow inward toward `doma
 | ------------------ | -------------------------------- | --------------------------------------------------------------------------- | ---------------------------------------------------- | ------------------------------------ |
 | **Domain**         | `services/tasks/domain/`         | "What is a Task? What events exist?"                                        | stdlib, `pydantic`, `sqlmodel`, `app.core.*`         | `fastapi`                            |
 | **Interfaces**     | `services/tasks/interfaces.py`   | "What can the application ask of storage?"                                  | `domain/`                                            | `infrastructure/`, `fastapi`         |
-| **Application**    | `services/tasks/application/`    | "How does a use-case run end-to-end?"                                       | `domain/`, `interfaces.py`                           | `infrastructure/`, `fastapi`         |
+| **Application**    | `services/tasks/application/`    | "How does a use-case run end-to-end?"                                       | `domain/`, `interfaces.py`, a **sibling feature's** `interfaces.py`/`domain/`, `fastapi.BackgroundTasks` | `infrastructure/`, `fastapi` (except `BackgroundTasks`) |
 | **Infrastructure** | `services/tasks/infrastructure/` | "How does this contract talk to SQLModel / logs?"                           | Anything in the feature + DB helpers from `app.core` | —                                    |
 | **API**            | `services/tasks/api/`            | "How does HTTP map to a use-case?"                                          | `application/`, `dependencies.py`                    | Directly into `infrastructure/`      |
 | **Core**           | `app/core/`                      | Cross-cutting: config, errors, bus, logging, middleware, health, DB session | stdlib + third-party                                 | Any individual `services/<feature>/` |
 
-The dependency rule is enforced by review (not import-linter). The single feature in Phase 1 keeps it tractable; if a second feature lands, automated boundary checks become worth their weight.
+The dependency rule is enforced by review (not import-linter). Two features (tasks, workflows) coupled only at their acyclic `interfaces.py`/`domain/` leaves keep it tractable; a third feature — or a cross-worker seam — would make an automated boundary check (import-linter) worth its weight.
 
 ---
 
@@ -273,7 +281,7 @@ The five `Task*` events are `pydantic.BaseModel` subclasses inheriting from `cor
 
 **Why `ABC + @abstractmethod` over `Protocol`.** A `Protocol` is structurally typed; a missing method only fails when first called (`AttributeError` at runtime). An ABC fails at _instantiation_ time with a clear `TypeError: Can't instantiate abstract class ... with abstract methods ...`. The earlier feedback loop is worth the slight rigidity for a small contract.
 
-**The contract.** Six methods: `add`, `get`, `list`, `replace`, `patch`, `delete`. The signatures encode three deliberate decisions:
+**The contract.** Seven methods: `add`, `get`, `list`, `replace`, `patch`, `delete`, and `count_by_status` — the last added for the cross-feature strand guard, which the workflows feature reads through its narrow `StatusUsagePort`. The core-CRUD signatures encode three deliberate decisions:
 
 > **🔒 Internal contract.** `replace()` and `patch()` MUST return `tuple[Task, Task]` — `(pre_mutation_snapshot, updated_row)`. The service layer relies on this single-fetch contract to avoid a redundant `get()` for pre-state. Postgres adapters that don't share SQLAlchemy's identity-map benefit from this directly.
 
@@ -293,7 +301,7 @@ The five `Task*` events are `pydantic.BaseModel` subclasses inheriting from `cor
 
 > **Implements:** FRD §3 (use-case → endpoint mapping), §5.1 (event-firing rules — enforced as service-level unit tests).
 
-Six methods (`create`, `get`, `list`, `replace`, `patch`, `delete`), all `async def` — CLAUDE.md mandates async at the service boundary. Two collaborators are injected at construction (constructor injection): a `TaskRepositoryInterface` and an `EventBus`. The service does not know whether its repository is SQLModel-backed, in-memory, or a Postgres adapter.
+Seven methods (`create`, `get`, `list`, `replace`, `patch`, `delete`, plus `legal_moves` for the transitions view), all `async def` — CLAUDE.md mandates async at the service boundary. Three collaborators are injected at construction (constructor injection): a `TaskRepositoryInterface`, a `WorkflowRepositoryInterface`, and an `EventBus`. The service does not know whether its repository is SQLModel-backed, in-memory, or a Postgres adapter.
 
 The change-detection step iterates `MUTABLE_FIELDS` (not the patched-fields dict) and compares pre- and post-values returned from the repository's tuple contract. This means the service never needs to do a second fetch — the _only_ reason it knew the pre-state is because `replace()` / `patch()` already returned both. The rationale for the layered fire order (`TaskUpdated` → `TaskStatusChanged` → `TaskCompleted`) is captured in §4.3; the conditions themselves are owned by FRD §5.1.
 
@@ -441,7 +449,7 @@ The `Settings` class exposes three derived properties driven by the `APP_ENV →
 
 **Pattern.** Factory Method + Lifespan-managed resources.
 
-The `create_app()` function is the single entrypoint: it builds the `FastAPI` instance, attaches the middleware stack (`ZstdMiddleware` first so it sits innermost — §8.9 — then `RequestIDMiddleware`), registers exception handlers, mounts the health router and the tasks router (prefixed by `settings.api_prefix`), and configures the custom OpenAPI operation-id function (`<tag>-<route_name>`, which keeps generated client SDKs readable).
+The `create_app()` function is the single entrypoint: it builds the `FastAPI` instance, attaches the middleware stack (added innermost-first — `ZstdMiddleware` (§8.9), then `RequestTimeout`, `BodySizeLimit`, config-driven `CORS`, `SecurityHeaders`, and `RequestIDMiddleware` outermost), registers exception handlers, mounts the health, `/diagnose`, tasks, and workflow routers (the feature routers prefixed by `settings.api_prefix`) plus Prometheus `/metrics`, and configures the custom OpenAPI operation-id function (`<tag>-<route_name>`, which keeps generated client SDKs readable).
 
 The `lifespan` async context manager owns startup and shutdown:
 
