@@ -27,7 +27,7 @@ All endpoints are mounted under `/v1`. Open the interactive docs at <http://loca
 | `GET`    | `/readyz`                    | Readiness — DB round-trip                                   | `200 OK` or `503` | —                                                                                                                                                 |
 | `GET`    | `/metrics`                   | Prometheus exposition (ops-only, not in the OpenAPI schema) | `200 OK`          | —                                                                                                                                                 |
 
-Every non-2xx response uses the same envelope: `{"error": {"code", "message", "details", "request_id"}}`. The `code` is machine-readable so consumers can branch without parsing English. Two responses are enforced globally by request-hardening middleware rather than per-route: `413 payload_too_large` (body over the size limit) and `504 request_timeout` (handler over the time budget).
+Every non-2xx response uses the same envelope: `{"error": {"code", "message", "details", "request_id"}}`. The `code` is machine-readable so consumers can branch without parsing English. A few responses are produced globally rather than per-route: `413 payload_too_large` (body over the size limit) and `504 request_timeout` (handler over the time budget) by request-hardening middleware, and `503 service_unavailable` when the database is unreachable or its connection pool is saturated — a retryable failure.
 
 ### Example: create, update, list
 

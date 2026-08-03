@@ -71,6 +71,22 @@ async def test_create_malformed_json_body_returns_422_envelope(client: AsyncClie
     assert_error(r, 422, ErrorCode.VALIDATION_ERROR)
 
 
+async def test_create_rejects_nul_byte_in_title(client: AsyncClient) -> None:
+    # Postgres text can't store a NUL (0x00); reject at the boundary as 422, not a 500.
+    r = await client.post("/v1/tasks", json={"title": "a\x00b", "priority": 1})
+    assert_error(r, 422, ErrorCode.VALIDATION_ERROR)
+
+
+async def test_create_rejects_nul_byte_in_description(client: AsyncClient) -> None:
+    r = await client.post("/v1/tasks", json={"title": "ok", "priority": 1, "description": "x\x00y"})
+    assert_error(r, 422, ErrorCode.VALIDATION_ERROR)
+
+
+async def test_create_rejects_nul_byte_in_status(client: AsyncClient) -> None:
+    r = await client.post("/v1/tasks", json={"title": "ok", "priority": 1, "status": "n\x00ew"})
+    assert_error(r, 422, ErrorCode.VALIDATION_ERROR)
+
+
 async def test_create_with_explicit_entry_status_persists_it(client: AsyncClient) -> None:
     r = await client.post("/v1/tasks", json={"title": "x", "priority": 2, "status": "in_progress"})
     assert r.status_code == 201, r.text

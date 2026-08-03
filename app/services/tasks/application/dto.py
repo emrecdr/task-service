@@ -1,7 +1,7 @@
 import uuid
 from typing import Annotated, Any, Final, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
 from app.core.constants import DEFAULT_LIST_LIMIT, INT64_MAX, MAX_LIST_LIMIT, OrderDirection
 from app.core.datetime_utils import IsoUtcDatetime
@@ -14,9 +14,23 @@ from app.services.tasks.constants import (
     TaskSortField,
 )
 
+
+def _reject_nul(value: str) -> str:
+    # Postgres text cannot hold a NUL (0x00) byte — asyncpg raises CharacterNotInRepertoireError
+    # mid-query — so reject it at the boundary as a 422 rather than letting it 500. Applies to
+    # every inbound string that reaches a column or a WHERE clause (title/description/status/filter).
+    if "\x00" in value:
+        raise ValueError("must not contain a NUL (0x00) character")
+    return value
+
+
+# A ``str`` that additionally rejects the NUL byte Postgres can't store.
+NulSafeStr = Annotated[str, AfterValidator(_reject_nul)]
+
 NonBlankTitle = Annotated[
     str,
     Field(min_length=TITLE_MIN_LENGTH, max_length=TITLE_MAX_LENGTH, pattern=r"\S"),
+    AfterValidator(_reject_nul),
 ]
 
 # ``| None`` on these inbound fields means "omittable", never "nullable" — the
@@ -36,9 +50,9 @@ class TaskCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     title: NonBlankTitle
-    description: str | None = Field(default=None, max_length=DESCRIPTION_MAX_LENGTH)
+    description: NulSafeStr | None = Field(default=None, max_length=DESCRIPTION_MAX_LENGTH)
     # None = "use the active workflow's default entry state"; validated by the service.
-    status: str | None = None
+    status: NulSafeStr | None = None
     priority: int = Field(ge=PRIORITY_MIN, le=PRIORITY_MAX)
 
     @model_validator(mode="after")
@@ -54,8 +68,8 @@ class TaskPatch(BaseModel):
     )
 
     title: NonBlankTitle | None = None
-    description: str | None = Field(default=None, max_length=DESCRIPTION_MAX_LENGTH)
-    status: str | None = None
+    description: NulSafeStr | None = Field(default=None, max_length=DESCRIPTION_MAX_LENGTH)
+    status: NulSafeStr | None = None
     priority: int | None = Field(default=None, ge=PRIORITY_MIN, le=PRIORITY_MAX)
 
     @model_validator(mode="after")
@@ -101,7 +115,7 @@ class TaskTransitionsResponse(BaseModel):
 class TaskListParams(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    statuses: list[str] | None = Field(
+    statuses: list[NulSafeStr] | None = Field(
         default=None,
         alias="status",
         description="Filter by status. Repeat the param for multiple values.",

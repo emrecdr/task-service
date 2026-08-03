@@ -106,6 +106,13 @@ async def test_list_unknown_status_filter_returns_empty(client: AsyncClient) -> 
     assert r.json()["total"] == 0
 
 
+async def test_list_nul_byte_status_filter_returns_422(client: AsyncClient) -> None:
+    """Schemathesis regression: a NUL (0x00) in ?status= is malformed (Postgres text can't hold it)
+    and must 422 — distinct from a valid-but-unknown status, which returns 200 []."""
+    r = await client.get("/v1/tasks", params={"status": "a\x00b"})
+    assert_error(r, 422, ErrorCode.VALIDATION_ERROR)
+
+
 async def test_list_empty_returns_zero_total(client: AsyncClient) -> None:
     r = await client.get("/v1/tasks")
     assert r.status_code == 200
