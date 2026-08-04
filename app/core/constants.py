@@ -47,16 +47,20 @@ DEFAULT_DB_POOL_TIMEOUT_SECONDS: Final[float] = 5.0
 # to listeners exactly-once-per-success (at-least-once overall) and prunes delivered rows.
 DEFAULT_OUTBOX_POLL_INTERVAL_SECONDS: Final[float] = 1.0
 DEFAULT_OUTBOX_BATCH_SIZE: Final[int] = 100
-# After this many failed deliveries a row stops being polled — a dead-letter kept for triage,
-# never auto-pruned (only *delivered* rows age out). Crossing this ceiling emits the
-# error-level ``outbox_dead_lettered`` log event: alert on that.
+# After this many failed deliveries a row is dead-lettered: stamped ``dead_lettered_at``, kept
+# for triage, never polled again and never auto-pruned (only *delivered* rows age out). Crossing
+# the ceiling emits the error-level ``outbox_dead_lettered`` log event: alert on that.
 # Retries carry no backoff (a deliberate omission — see TIS §8.2), so this count times
 # ``POLL_INTERVAL`` *is* the outage a delivery survives: 300 ≈ 5 minutes, wide enough to ride
 # out a transient listener or DB failure instead of dead-lettering the event within seconds.
 DEFAULT_OUTBOX_MAX_RETRIES: Final[int] = 300
 # Delivered rows are pruned once they are this old; the poll query rides a partial index on
-# the unpublished rows so table growth never slows delivery between prunes.
+# the deliverable rows so table growth never slows delivery between prunes.
 DEFAULT_OUTBOX_RETENTION_DAYS: Final[int] = 7
 DEFAULT_OUTBOX_CLEANUP_INTERVAL_SECONDS: Final[float] = 3600.0  # hourly
+# Rows deleted per prune statement. Bounding the batch keeps each DELETE short: one lock set,
+# one WAL burst, and dead tuples autovacuum can keep pace with — an unbounded delete over a
+# large retention window would instead run long enough to hit ``db_statement_timeout_ms``.
+OUTBOX_PURGE_BATCH_SIZE: Final[int] = 1000
 # Truncate a stored ``last_error`` so one pathological driver message can't bloat a row.
 OUTBOX_LAST_ERROR_MAX_LENGTH: Final[int] = 1000

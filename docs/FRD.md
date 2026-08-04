@@ -196,7 +196,7 @@ Payloads carry detached domain `Task` snapshots (`Task.snapshot()`), never API D
 
 `TaskCompleted` is a convenience event so listeners do not need to filter `TaskStatusChanged` payloads when they only care about completion.
 
-A failed delivery is retried on a later poll (`retry_count` climbs, `last_error` records the reason); past a retry ceiling the row is left as a dead-letter for triage and never auto-pruned. Only successfully **delivered** rows age out — a periodic prune deletes rows whose `published_at` is at least the retention window (7 days) old.
+A failed delivery is retried on a later poll (`retry_count` climbs, `last_error` records the reason); past a retry ceiling the row is stamped `dead_lettered_at` and left as a dead-letter for triage — never re-polled, never auto-pruned. Only the two ends of a failure are logged at alert level (`outbox_delivery_failed` on the first, `outbox_dead_lettered` on death); the retries between them are debug, so a wide retry window cannot flood the log. Only successfully **delivered** rows age out — a periodic prune deletes rows whose `published_at` is at least the retention window (7 days) old.
 
 The workflows feature adds a sixth event: `WorkflowUpdated` (`version: int`, `states: list[str]`), published after every successful `PUT /v1/workflow` — definition changes are the highest-impact admin action and always reach the logs.
 

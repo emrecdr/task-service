@@ -10,12 +10,14 @@ payload, dispatches it to the registered listeners, and marks the row published.
 listeners must be idempotent (they key off ``event.id``, which round-trips in the payload).
 
 Failure is self-healing: a row that fails delivery keeps ``published_at IS NULL`` and its
-``retry_count`` climbs, so the next poll retries it; past ``max_retries`` it is skipped and
-left as a dead-letter for triage (never auto-pruned). Retries carry no backoff, so
-``max_retries × poll_interval`` is the outage a delivery survives before dead-lettering
-(defaults ≈ 5 minutes). Only *delivered* rows age out, via ``purge_published`` — so the table
-stays bounded while the partial index on the unpublished rows keeps the poll query fast
-regardless of history.
+``retry_count`` climbs, so the next poll retries it. Retries carry no backoff, so
+``max_retries × poll_interval`` is the outage a delivery survives (defaults ≈ 5 minutes);
+past that the row is **dead-lettered** — stamped ``dead_lettered_at``, dropped from the poll's
+partial index, and kept for triage (never auto-pruned). Dead-lettering is terminal by design:
+re-driving one is a deliberate operator action (clear ``dead_lettered_at`` and ``retry_count``),
+not something a change to ``max_retries`` does silently. Only *delivered* rows age out, via
+``purge_published``, so the table stays bounded while the deliverable-rows index keeps the poll
+fast regardless of history.
 
 **Listener latency budget.** A batch is claimed with row locks held until the poll's single
 commit, so the claiming transaction stays open for as long as the listeners take. Handlers
@@ -39,7 +41,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import Field, SQLModel, col, select
 
 from app.core.config import settings
-from app.core.constants import OUTBOX_LAST_ERROR_MAX_LENGTH
+from app.core.constants import OUTBOX_LAST_ERROR_MAX_LENGTH, OUTBOX_PURGE_BATCH_SIZE
 from app.core.database import session_factory
 from app.core.event_bus import Event, EventBus
 from app.core.logging import logger
@@ -54,14 +56,25 @@ class OutboxRecord(SQLModel, table=True):
     """One durable event awaiting delivery. ``published_at IS NULL`` ⇒ pending."""
 
     __tablename__ = "outbox"  # pyright: ignore[reportAssignmentType]
-    # Partial index over the poll's exact predicate + order key: only unpublished rows are
-    # indexed, so the "find the next batch" scan stays small no matter how much delivered
-    # history accumulates between prunes.
     __table_args__ = (
+        # Partial index over the poll's exact predicate + order key, so the "find the next
+        # batch" scan stays small no matter how much history accumulates. Dead-letters are
+        # excluded by predicate rather than by a ``retry_count`` filter: they are permanently
+        # undeliverable and, being the oldest rows, would otherwise sort *first* and be
+        # re-examined on every tick forever. (``retry_count < N`` could not live here anyway —
+        # an index predicate must be immutable, so it cannot reference a runtime setting.)
         Index(
-            "ix_outbox_unpublished",
+            "ix_outbox_deliverable",
             "occurred_at",
-            postgresql_where=text("published_at IS NULL"),
+            postgresql_where=text("published_at IS NULL AND dead_lettered_at IS NULL"),
+        ),
+        # Drives the retention prune. Fresh rows have ``published_at IS NULL`` so they never
+        # enter this index — it costs the request-path insert nothing, and gains an entry only
+        # when the relay marks a row delivered, off the hot path.
+        Index(
+            "ix_outbox_published_at",
+            "published_at",
+            postgresql_where=text("published_at IS NOT NULL"),
         ),
     )
 
@@ -72,6 +85,11 @@ class OutboxRecord(SQLModel, table=True):
     payload: dict[str, Any] = Field(sa_column=Column(JSONB, nullable=False))
     occurred_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))  # timestamptz
     published_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True))
+    # Terminal marker: set once delivery has failed ``max_retries`` times. Explicit rather than
+    # inferred from ``retry_count`` so the state survives a change to that setting — re-driving
+    # a dead-letter is a deliberate operator action (clear this and ``retry_count``), not the
+    # side effect of an edit to config.
+    dead_lettered_at: datetime | None = Field(default=None, sa_column=Column(DateTime(timezone=True), nullable=True))
     retry_count: int = Field(default=0)
     last_error: str | None = Field(default=None)
 
@@ -111,7 +129,7 @@ async def deliver_pending(
     """
     stmt = (
         select(OutboxRecord)
-        .where(col(OutboxRecord.published_at).is_(None), col(OutboxRecord.retry_count) < max_retries)
+        .where(col(OutboxRecord.published_at).is_(None), col(OutboxRecord.dead_lettered_at).is_(None))
         .order_by(col(OutboxRecord.occurred_at).asc(), col(OutboxRecord.id).asc())
         .limit(batch_size)
         .with_for_update(skip_locked=True)
@@ -128,11 +146,13 @@ async def deliver_pending(
             reason = str(err)
             row.retry_count += 1
             row.last_error = reason[:OUTBOX_LAST_ERROR_MAX_LENGTH]
-            # Crossing the ceiling is the alertable moment: the row stops being polled, so this
-            # is the last line anything will ever emit about it. Escalated to error exactly once
-            # (the next poll never claims it again) — retries below the ceiling stay warnings.
             dead_lettered = row.retry_count >= max_retries
-            emit = logger.error if dead_lettered else logger.warning
+            if dead_lettered:
+                row.dead_lettered_at = datetime.now(UTC)
+            # Only the two ends of a failure are alertable: it started failing, and it died.
+            # The retries between them say nothing new, and at ``max_retries`` 300 they would
+            # be 300 lines per row (100/s at a full batch) — so they drop to debug.
+            emit = logger.error if dead_lettered else (logger.warning if row.retry_count == 1 else logger.debug)
             emit(
                 "outbox_dead_lettered" if dead_lettered else "outbox_delivery_failed",
                 outbox_id=str(row.id),
@@ -151,16 +171,31 @@ async def purge_published(session: AsyncSession, *, retention_days: int) -> int:
 
     Filters on ``published_at`` (the delivered stamp), never ``occurred_at`` — an old row
     that is still pending means delivery has been failing, exactly what must NOT be dropped.
+
+    Deletes in bounded batches, each its own transaction. One unbounded DELETE over a whole
+    retention window holds its locks and accumulates its WAL for as long as it runs, which on
+    a large table means exceeding ``db_statement_timeout_ms`` and failing outright; short
+    statements also let autovacuum reclaim the dead tuples as they are produced.
     """
     cutoff = datetime.now(UTC) - timedelta(days=retention_days)
-    stmt = delete(OutboxRecord).where(
-        col(OutboxRecord.published_at).is_not(None),
-        col(OutboxRecord.published_at) <= cutoff,
+    due = (
+        select(col(OutboxRecord.id))
+        .where(col(OutboxRecord.published_at).is_not(None), col(OutboxRecord.published_at) <= cutoff)
+        .limit(OUTBOX_PURGE_BATCH_SIZE)
     )
-    # ``execute`` is typed as ``Result``; a DELETE returns a ``CursorResult`` exposing ``rowcount``.
-    result = cast("CursorResult[Any]", await session.execute(stmt))
-    await session.commit()
-    return result.rowcount or 0
+    deleted = 0
+    while True:
+        batch = list((await session.scalars(due)).all())
+        if not batch:
+            return deleted
+        # ``execute`` is typed as ``Result``; a DELETE returns a ``CursorResult`` with ``rowcount``.
+        result = cast(
+            "CursorResult[Any]", await session.execute(delete(OutboxRecord).where(col(OutboxRecord.id).in_(batch)))
+        )
+        await session.commit()
+        deleted += result.rowcount or 0
+        if len(batch) < OUTBOX_PURGE_BATCH_SIZE:
+            return deleted
 
 
 class OutboxRelay:

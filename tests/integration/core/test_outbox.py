@@ -163,6 +163,9 @@ class _RecordingLogger:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, dict[str, Any]]] = []
 
+    def debug(self, event: str, **fields: Any) -> None:
+        self.calls.append(("debug", event, fields))
+
     def warning(self, event: str, **fields: Any) -> None:
         self.calls.append(("warning", event, fields))
 
@@ -170,29 +173,36 @@ class _RecordingLogger:
         self.calls.append(("error", event, fields))
 
 
-async def test_crossing_the_retry_ceiling_logs_dead_lettered_at_error(
+async def test_delivery_failure_logs_only_the_two_alertable_ends(
     session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # The row stops being polled here, so this line is the last signal anything ever emits about
-    # it — the alertable event. A retry below the ceiling stays a warning.
+    """First failure and death are alertable; the retries between them are not.
+
+    At the default ceiling that middle band is ~300 attempts per row, so emitting them at
+    warning would bury the two lines that matter under 100 lines/second at a full batch.
+    """
     recorder = _RecordingLogger()
     monkeypatch.setattr(outbox_mod, "logger", recorder)
     bus = EventBus()
     bus.subscribe(TaskCreated, _boom)
     await _stage(session, TaskCreated(task=_task().snapshot()))
 
-    await deliver_pending(session, registry=EVENT_REGISTRY, bus=bus, batch_size=10, max_retries=2)
-    assert [(level, event) for level, event, _ in recorder.calls] == [("warning", "outbox_delivery_failed")]
+    for _ in range(4):  # 4 attempts against a ceiling of 4
+        await deliver_pending(session, registry=EVENT_REGISTRY, bus=bus, batch_size=10, max_retries=4)
 
-    await deliver_pending(session, registry=EVENT_REGISTRY, bus=bus, batch_size=10, max_retries=2)
-    level, event, fields = recorder.calls[1]  # second failure reaches max_retries=2
-    assert (level, event) == ("error", "outbox_dead_lettered")
-    assert fields["retry_count"] == 2
+    assert [(level, event) for level, event, _ in recorder.calls] == [
+        ("warning", "outbox_delivery_failed"),  # it started failing
+        ("debug", "outbox_delivery_failed"),
+        ("debug", "outbox_delivery_failed"),
+        ("error", "outbox_dead_lettered"),  # it died
+    ]
+    assert recorder.calls[-1][2]["retry_count"] == 4
 
 
 async def test_deliver_pending_skips_dead_lettered_rows(session: AsyncSession) -> None:
-    # A row at the retry ceiling is a dead-letter: never claimed again, always retained.
+    # A stamped row is a dead-letter: never claimed again, always retained.
     row = OutboxRecord.from_event(TaskCreated(task=_task().snapshot()))
+    row.dead_lettered_at = datetime.now(UTC)
     row.retry_count = 5
     session.add(row)
     await session.commit()
@@ -206,6 +216,45 @@ async def test_deliver_pending_skips_dead_lettered_rows(session: AsyncSession) -
     assert delivered == 0
     assert recorder.events == []
     assert await _count_pending(session) == 1
+
+
+async def test_dead_lettering_is_terminal_not_inferred_from_retry_count(session: AsyncSession) -> None:
+    """A raised ceiling must not silently resurrect a dead-letter — the stamp is what counts."""
+    bus = EventBus()
+    bus.subscribe(TaskCreated, _boom)
+    await _stage(session, TaskCreated(task=_task().snapshot()))
+
+    await deliver_pending(session, registry=EVENT_REGISTRY, bus=bus, batch_size=10, max_retries=1)
+    row = (await session.scalars(select(OutboxRecord))).one()
+    assert row.dead_lettered_at is not None
+
+    # Re-poll with a far higher ceiling: under the old retry_count < max_retries predicate this
+    # row would be claimed again; the terminal stamp keeps it out.
+    claimed = await deliver_pending(session, registry=EVENT_REGISTRY, bus=bus, batch_size=10, max_retries=99)
+    assert claimed == 0
+    assert row.retry_count == 1  # untouched — never re-attempted
+
+
+async def test_re_driving_a_dead_letter_makes_it_deliverable_again(session: AsyncSession) -> None:
+    """The operator escape hatch: clear the stamp and the row re-enters the poll."""
+    recorder = _Recorder()
+    bus = EventBus()
+    bus.subscribe(TaskCreated, _boom)
+    await _stage(session, TaskCreated(task=_task().snapshot()))
+    await deliver_pending(session, registry=EVENT_REGISTRY, bus=bus, batch_size=10, max_retries=1)
+
+    row = (await session.scalars(select(OutboxRecord))).one()
+    row.dead_lettered_at = None
+    row.retry_count = 0
+    await session.commit()
+
+    bus = EventBus()  # a healthy listener this time
+    bus.subscribe(TaskCreated, recorder)
+    delivered = await deliver_pending(session, registry=EVENT_REGISTRY, bus=bus, batch_size=10, max_retries=1)
+
+    assert delivered == 1
+    assert [type(e) for e in recorder.events] == [TaskCreated]
+    assert await _count_pending(session) == 0
 
 
 async def test_deliver_pending_honours_batch_size(session: AsyncSession) -> None:
@@ -249,6 +298,40 @@ async def test_purge_published_deletes_only_old_delivered_rows(session: AsyncSes
     assert deleted == 1
     remaining = {r.payload["task"]["title"] for r in (await session.scalars(select(OutboxRecord))).all()}
     assert remaining == {"recent", "stuck"}
+
+
+async def test_purge_published_never_prunes_a_dead_letter(session: AsyncSession) -> None:
+    # A dead-letter is undeliverable *and* old, but it is the triage record — pruning it would
+    # silently discard the only evidence the event ever existed.
+    dead = OutboxRecord.from_event(TaskCreated(task=_task("dead").snapshot()))
+    dead.occurred_at = datetime.now(UTC) - timedelta(days=90)
+    dead.dead_lettered_at = datetime.now(UTC) - timedelta(days=89)
+    dead.retry_count = 300
+    session.add(dead)
+    await session.commit()
+
+    assert await purge_published(session, retention_days=7) == 0
+    assert await _count_rows(session) == 1
+
+
+async def test_purge_published_deletes_across_batches(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """More rows than one batch: the loop must keep going until the backlog is drained.
+
+    Bounded batches are what keep each DELETE short enough to stay under the statement
+    timeout, so "drains fully" is the property that makes the bound safe to add.
+    """
+    monkeypatch.setattr(outbox_mod, "OUTBOX_PURGE_BATCH_SIZE", 2)
+    stale = datetime.now(UTC) - timedelta(days=30)
+    for i in range(5):
+        row = OutboxRecord.from_event(TaskCreated(task=_task(f"old-{i}").snapshot()))
+        row.published_at = stale
+        session.add(row)
+    await session.commit()
+
+    deleted = await purge_published(session, retention_days=7)  # 2 + 2 + 1
+
+    assert deleted == 5
+    assert await _count_rows(session) == 0
 
 
 # --- The live relay loop -----------------------------------------------------
