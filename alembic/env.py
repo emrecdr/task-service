@@ -11,6 +11,7 @@ from app.core.config import settings
 
 # Import the modules that define SQLModel ``table=True`` rows so they register on
 # ``SQLModel.metadata`` — that is what autogenerate diffs against.
+from app.core import outbox as _outbox_models  # noqa: F401
 from app.services.tasks.domain import models as _tasks_models  # noqa: F401
 from app.services.workflows.infrastructure import repository as _workflows_repo  # noqa: F401
 

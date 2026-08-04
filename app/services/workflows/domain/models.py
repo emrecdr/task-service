@@ -8,10 +8,18 @@ from typing import Any, Final
 RESERVED_TRANSITION_FIELDS: Final[frozenset[str]] = frozenset({"name", "from", "to"})
 RESERVED_STATE_FIELDS: Final[frozenset[str]] = frozenset({"name", "initial"})
 
-# State-meta key marking task completion. Defined here — with the document
-# vocabulary — so the seed (own feature) and the tasks feature (sibling-domain
-# allowance) share one spelling. Workflow machinery itself never reads it.
+# Meta keys the engine interprets (the rest of ``meta`` stays uninterpreted). Defined here —
+# with the document vocabulary — so the seed, the tasks feature, the engine, and the document
+# boundary that validates them all share one spelling.
+#
+# ``completes`` (state): entering the state marks task completion (fires ``TaskCompleted``).
+# ``wip_limit`` (state): max work items the state may hold — a move that would exceed it is
+#   refused (409). Validated at the document boundary as a non-negative int.
+# ``roles`` (transition): the actor must hold one of these roles to make the move (else 403).
+#   Validated at the document boundary as a list of non-empty strings.
 COMPLETES_META_KEY: Final[str] = "completes"
+WIP_LIMIT_META_KEY: Final[str] = "wip_limit"
+ROLES_META_KEY: Final[str] = "roles"
 
 
 def require_nonblank(value: str, label: str) -> None:

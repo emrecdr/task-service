@@ -1,10 +1,11 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Path, status
+from fastapi import APIRouter, Path, status
 
 from app.core.openapi_responses import (
     CONFLICT_RESPONSE,
+    FORBIDDEN_RESPONSE,
     NOT_FOUND_RESPONSE,
     PATCH_VALIDATION_RESPONSE,
     VALIDATION_RESPONSE,
@@ -17,7 +18,7 @@ from app.services.tasks.application.dto import (
     TaskResponse,
     TaskTransitionsResponse,
 )
-from app.services.tasks.dependencies import TaskQueryParamsDep, TaskServiceDep
+from app.services.tasks.dependencies import ActorRolesDep, TaskQueryParamsDep, TaskServiceDep
 from app.services.tasks.domain.models import Task
 
 TaskIdPath = Annotated[uuid.UUID, Path()]
@@ -33,16 +34,16 @@ router = APIRouter(prefix="/tasks", tags=["tasks"])
     status_code=status.HTTP_201_CREATED,
     response_model=TaskResponse,
     responses={
+        # No 403: a create resolves an entry state, never a role-guarded transition.
         409: CONFLICT_RESPONSE,
         422: WRITE_VALIDATION_RESPONSE,
     },
 )
 async def create_task(
     body: TaskCreate,
-    background_tasks: BackgroundTasks,
     service: TaskServiceDep,
 ) -> Task:
-    return await service.create(**body.model_dump(), background_tasks=background_tasks)
+    return await service.create(**body.model_dump())
 
 
 # ======================================================= #
@@ -122,6 +123,7 @@ async def task_transitions(
     "/{task_id}",
     response_model=TaskResponse,
     responses={
+        403: FORBIDDEN_RESPONSE,
         404: NOT_FOUND_RESPONSE,
         409: CONFLICT_RESPONSE,
         422: WRITE_VALIDATION_RESPONSE,
@@ -130,10 +132,10 @@ async def task_transitions(
 async def replace_task(
     task_id: TaskIdPath,
     body: TaskCreate,
-    background_tasks: BackgroundTasks,
     service: TaskServiceDep,
+    roles: ActorRolesDep,
 ) -> Task:
-    return await service.replace(task_id, **body.model_dump(), background_tasks=background_tasks)
+    return await service.replace(task_id, **body.model_dump(), roles=roles)
 
 
 # ======================================================= #
@@ -144,6 +146,7 @@ async def replace_task(
     "/{task_id}",
     response_model=TaskResponse,
     responses={
+        403: FORBIDDEN_RESPONSE,
         404: NOT_FOUND_RESPONSE,
         409: CONFLICT_RESPONSE,
         422: PATCH_VALIDATION_RESPONSE,
@@ -152,13 +155,13 @@ async def replace_task(
 async def patch_task(
     task_id: TaskIdPath,
     body: TaskPatch,
-    background_tasks: BackgroundTasks,
     service: TaskServiceDep,
+    roles: ActorRolesDep,
 ) -> Task:
     return await service.patch(
         task_id,
         fields=body.model_dump(exclude_unset=True),
-        background_tasks=background_tasks,
+        roles=roles,
     )
 
 
@@ -176,7 +179,6 @@ async def patch_task(
 )
 async def delete_task(
     task_id: TaskIdPath,
-    background_tasks: BackgroundTasks,
     service: TaskServiceDep,
 ) -> None:
-    await service.delete(task_id, background_tasks=background_tasks)
+    await service.delete(task_id)

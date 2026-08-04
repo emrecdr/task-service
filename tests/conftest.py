@@ -5,6 +5,9 @@ import os
 
 # Lock APP_ENV before app modules import.
 os.environ.setdefault("APP_ENV", "test")
+# Keep the outbox relay off under test: a background poller would race per-test assertions
+# on outbox contents. Tests drive delivery explicitly via ``deliver_pending``.
+os.environ.setdefault("OUTBOX_RELAY_ENABLED", "false")
 
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from typing import Any
@@ -16,12 +19,14 @@ from app.main import app
 from app.services.workflows.infrastructure.seed import seed_workflow_if_missing
 from httpx import ASGITransport, AsyncClient, Response
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.pool import NullPool
 from testcontainers.community.postgres import PostgresContainer
 
 type CreateTask = Callable[..., Awaitable[str]]
+type InstallWorkflow = Callable[[dict[str, Any]], Awaitable[None]]
 
-_TRUNCATE = text("TRUNCATE tasks, workflow_definitions RESTART IDENTITY CASCADE")
+_TRUNCATE = text("TRUNCATE tasks, workflow_definitions, outbox RESTART IDENTITY CASCADE")
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -50,6 +55,13 @@ async def _fresh_data() -> None:  # pyright: ignore[reportUnusedFunction]
 
 
 @pytest.fixture
+async def session() -> AsyncIterator[AsyncSession]:
+    """A bare `AsyncSession` for tests that drive the repository / DB directly."""
+    async with database.session_factory() as s:
+        yield s
+
+
+@pytest.fixture
 async def client() -> AsyncIterator[AsyncClient]:
     # ASGITransport does not run lifespan; wrap it explicitly.
     async with (
@@ -67,6 +79,21 @@ def create_task(client: AsyncClient) -> CreateTask:
         r = await client.post("/v1/tasks", json={"title": title, "priority": priority})
         assert r.status_code == 201, r.text
         return str(r.json()["id"])
+
+    return _factory
+
+
+@pytest.fixture
+def install_workflow(client: AsyncClient) -> InstallWorkflow:
+    """Factory: ``await install_workflow(document)`` makes that definition the active one.
+
+    Every workflow-governed test starts by replacing the seeded any→any definition, so the
+    PUT-and-assert-200 lives here rather than once per test module.
+    """
+
+    async def _factory(document: dict[str, Any]) -> None:
+        r = await client.put("/v1/workflow", json=document)
+        assert r.status_code == 200, r.text
 
     return _factory
 

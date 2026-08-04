@@ -69,9 +69,9 @@ The service is built around four design choices, each tied to an objective from 
 
 **Single domain+ORM entity.** The `Task` SQLModel row _is_ the domain entity (`table=True`). Phase 1 does not split domain and ORM into two classes; the duplication wasn't paying for itself at this scale. If/when a richer domain model arrives (state machines, invariants the ORM can't express), the split happens then.
 
-**Domain event bus.** The application service publishes `TaskCreated`, `TaskUpdated`, `TaskStatusChanged`, `TaskCompleted`, `TaskDeleted` (and the workflows feature `WorkflowUpdated`) after each mutation via `EventBus.publish(event, background_tasks)`. Listeners run through FastAPI `BackgroundTasks` so they execute _post-commit, pre-response_ without blocking the HTTP call. Phase 1 ships one listener (structured-log subscriber); the bus is the seam where notifications / outbox / Kafka would land in Phase 2.
+**Durable event delivery (transactional outbox).** Each mutation writes its events (`TaskCreated`, `TaskUpdated`, `TaskStatusChanged`, `TaskCompleted`, `TaskDeleted`, and the workflows feature's `WorkflowUpdated`) into an `outbox` table **in the same transaction** as the row change — so an event is never lost to a crash between commit and delivery. An in-process relay (`app/core/outbox.py`, started in the lifespan) then delivers each pending event to the `EventBus` listeners **at-least-once**, off the request path so it never blocks the HTTP call, marks it published, retries failures (dead-lettering past a ceiling), and prunes delivered rows after 7 days. Listeners are idempotent (they dedupe on `event.id`). One listener ships today (structured-log subscriber); notifications / Kafka would land as new listeners, not a mechanism change.
 
-**Workflow as a service.** Task states and transitions are **runtime data**, not code: the active definition (states, entry points, named transitions, open `meta` fields) lives in a versioned DB row managed via `GET/PUT /v1/workflow`, and the tasks service enforces it on every status change — illegal moves 409 with the allowed list, definitions that would strand existing tasks are rejected. The shipped seed is behavior-identical to the original fixed three-state contract, so the default experience is unchanged until someone reshapes the workflow.
+**Workflow as a service.** Task states and transitions are **runtime data**, not code: the active definition (states, entry points, named transitions, open `meta` fields) lives in a versioned DB row managed via `GET/PUT /v1/workflow`, and the tasks service enforces it on every status change — illegal moves 409 with the allowed list, definitions that would strand existing tasks are rejected. A definition can also declare **guards** as `meta`: a transition's `roles` (actor must hold one, else 403 — roles from a provisional `X-Roles` header until auth lands) and a state's `wip_limit` (entering a full state → 409, best-effort). The engine reads them via a `TransitionContext` the service builds per write. The shipped seed is behavior-identical to the original fixed three-state contract, so the default experience is unchanged until someone reshapes the workflow.
 
 **Swappable repository.** `TaskRepositoryInterface` is an ABC, not a `Protocol` — any implementation that forgets a method fails at _instantiation_ time with a clear `TypeError`. Contract tests (`tests/contract/`) are parametrised over every concrete repository, so adding a Postgres adapter in Phase 2 requires zero new test code.
 
@@ -98,14 +98,15 @@ app/
 │   ├── compression.py             # ZstdMiddleware — negotiated zstd response compression (PEP 784)
 │   ├── database.py                # Async SQLAlchemy engine + async_sessionmaker (asyncpg); configure/dispose
 │   ├── datetime_utils.py          # ensure_utc helper (boundary normaliser)
-│   ├── dependencies.py            # Cross-cutting DI: get_session, get_event_bus
+│   ├── dependencies.py            # Cross-cutting DI: get_session (request AsyncSession)
 │   ├── diagnose.py                # /diagnose ops endpoint (dev-gated detail, secret-masked)
 │   ├── errors.py                  # ErrorCode enum, AppError hierarchy, global handlers
-│   ├── event_bus.py               # In-process EventBus (publish via BackgroundTasks)
+│   ├── event_bus.py               # In-process EventBus (subscribe/dispatch) + base Event
 │   ├── health.py                  # /healthz and /readyz handlers
 │   ├── logging.py                 # structlog configuration
 │   ├── middleware.py              # Request-ID, security headers, body-size + timeout limits
-│   └── openapi_responses.py       # ErrorEnvelope schema + shared 404 / 409 / 422 response specs
+│   ├── openapi_responses.py       # ErrorEnvelope schema + shared 404 / 409 / 422 response specs
+│   └── outbox.py                  # Transactional outbox: OutboxRecord + relay (durable event delivery)
 └── services/
     └── tasks/                     # Feature-first vertical slice — full domain/app/infra/api
         ├── domain/                # Task SQLModel (table=True) + 5 domain events + MUTABLE_FIELDS

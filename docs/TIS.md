@@ -65,14 +65,15 @@ task-service/
 │   │   ├── constants.py              # Environment enum + list/int64/DB-pool/zstd bounds
 │   │   ├── database.py               # Async Postgres engine + async_sessionmaker (asyncpg) + pool/probe
 │   │   ├── datetime_utils.py         # ensure_utc / iso_z / IsoUtcDatetime
-│   │   ├── dependencies.py           # Core DI providers (session, event bus)
+│   │   ├── dependencies.py           # Core DI provider (request session)
 │   │   ├── diagnose.py               # /diagnose ops endpoint (dev-gated, secret-masked)
 │   │   ├── errors.py                 # ErrorCode enum + AppError hierarchy + handler registration
-│   │   ├── event_bus.py              # In-process Event Bus + base Event
+│   │   ├── event_bus.py              # In-process Event Bus (subscribe/dispatch) + base Event
 │   │   ├── health.py                 # /healthz, /readyz handlers
 │   │   ├── logging.py                # structlog setup (env-aware)
 │   │   ├── middleware.py             # RequestID, security headers, body-size + timeout limits
-│   │   └── openapi_responses.py      # ErrorEnvelope schema + shared error response specs
+│   │   ├── openapi_responses.py      # ErrorEnvelope schema + shared error response specs
+│   │   └── outbox.py                 # OutboxRecord + relay: durable, at-least-once event delivery
 │   └── services/
 │       └── tasks/
 │           ├── __init__.py
@@ -114,9 +115,9 @@ task-service/
 │           │   ├── service.py        # WorkflowService (validate → strand guard → append version)
 │           │   └── dto.py            # WorkflowResponse
 │           ├── domain/
-│           │   ├── models.py         # State, Transition value objects (open meta model)
+│           │   ├── models.py         # State, Transition value objects (open meta; completes/wip_limit/roles keys)
 │           │   ├── definition.py     # Workflow: states + transition table + reachability
-│           │   ├── engine.py         # WorkflowEngine: resolve_entry / check_move / legal_moves
+│           │   ├── engine.py         # WorkflowEngine + TransitionContext: entry/move + role & WIP guards
 │           │   └── events.py         # WorkflowUpdated
 │           ├── infrastructure/
 │           │   ├── repository.py     # WorkflowRecord (JSONB column) + SQLModelWorkflowRepository
@@ -197,7 +198,7 @@ The implementation rests on a small set of explicitly chosen patterns. Each one 
 | **Repository Pattern** with **ABC-as-Port**                           | `interfaces.py::TaskRepositoryInterface` + `infrastructure/repository.py`                                   | Application depends on a contract, not an ORM; Postgres adapter in Phase 2 needs zero domain churn                                   |
 | **Application Service / Use-Case Object**                             | `application/service.py::TaskService`                                                                       | All event-firing rules in one place; routes stay thin                                                                                |
 | **Domain Events** + **Publish/Subscribe Bus**                         | `domain/events.py` + `core/event_bus.py`                                                                    | Side-effects (logs, future notifications) are append-only — new listener, no service edit                                            |
-| **Background Tasks** for post-commit fan-out                          | `EventBus.publish(event, background_tasks)`                                                                 | Events fire _after_ the DB commit and _before_ the HTTP response returns; listeners never block the caller                           |
+| **Transactional Outbox** + in-process relay for durable delivery      | `core/outbox.py` (`OutboxRecord`, `deliver_pending`, `OutboxRelay`)                                         | Events are staged in the write's own transaction (never lost to a crash) and delivered off the request path, at-least-once; listeners never block the caller |
 | **Snapshot pattern** for event payloads                               | `Task.snapshot()`                                                                                           | Pre/post-mutation values are captured as detached copies, immune to later session mutations                                          |
 | **Single Global Exception Handler / Error Envelope**                  | `core/errors.py::register_exception_handlers`                                                               | Domain code raises typed exceptions; HTTP shape is owned by one handler, schema is uniform                                           |
 | **Factory Method**                                                    | `Task.from_input()`, `app.main::create_app()`                                                               | Object construction owns invariants; the app's wiring is reproducible and testable                                                   |
@@ -218,7 +219,7 @@ Each layer answers exactly one question. Imports always flow inward toward `doma
 | ------------------ | -------------------------------- | --------------------------------------------------------------------------- | ---------------------------------------------------- | ------------------------------------ |
 | **Domain**         | `services/tasks/domain/`         | "What is a Task? What events exist?"                                        | stdlib, `pydantic`, `sqlmodel`, `app.core.*`         | `fastapi`                            |
 | **Interfaces**     | `services/tasks/interfaces.py`   | "What can the application ask of storage?"                                  | `domain/`                                            | `infrastructure/`, `fastapi`         |
-| **Application**    | `services/tasks/application/`    | "How does a use-case run end-to-end?"                                       | `domain/`, `interfaces.py`, a **sibling feature's** `interfaces.py`/`domain/`, `fastapi.BackgroundTasks` | `infrastructure/`, `fastapi` (except `BackgroundTasks`) |
+| **Application**    | `services/tasks/application/`    | "How does a use-case run end-to-end?"                                       | `domain/`, `interfaces.py`, a **sibling feature's** `interfaces.py`/`domain/`, `core/event_bus.Event` | `infrastructure/`, `fastapi` |
 | **Infrastructure** | `services/tasks/infrastructure/` | "How does this contract talk to SQLModel / logs?"                           | Anything in the feature + DB helpers from `app.core` | —                                    |
 | **API**            | `services/tasks/api/`            | "How does HTTP map to a use-case?"                                          | `application/`, `dependencies.py`                    | Directly into `infrastructure/`      |
 | **Core**           | `app/core/`                      | Cross-cutting: config, errors, bus, logging, middleware, health, DB session | stdlib + third-party                                 | Any individual `services/<feature>/` |
@@ -255,6 +256,8 @@ The dependency rule is enforced by review (not import-linter). Two features (tas
 
 `Task.status` is a plain `str` validated at the service layer against the **active workflow definition** (`app/services/workflows/`); the shipped seed defines `new`, `in_progress`, `completed`. The deliberate trade-off of data-owned states: pyright cannot catch a typo'd state, so every status is validated at runtime — unknown states 422 (listing `known_states`), illegal moves 409 (listing `allowed`), and the PUT-workflow strand guard keeps stored rows consistent with the definition. `TaskSortField` remains a `StrEnum`: sortable columns are a closed set owned by code. `COMPLETES_META_KEY` (`"completes"`) — defined with the document vocabulary in `workflows/domain/models.py` — names the state-meta flag the tasks feature reads to fire `TaskCompleted`.
 
+Beyond `completes`, the engine reads two **guard** keys — a state's `wip_limit` and a transition's `roles` — via a `TransitionContext(roles, occupancy)` the service assembles per write (roles from the provisional `X-Roles` header; occupancy from `count_by_status()`, fetched only when `engine.has_wip_limits()`). A role violation is 403 `transition_forbidden`; a WIP violation is 409 `wip_limit_exceeded`. Both guard values are validated at the `PUT /v1/workflow` boundary (`wip_limit` a non-negative int, `roles` a non-empty list of non-empty strings), so a malformed guard fails at definition time rather than as a 500 on a later write. All engine-read keys are `*_META_KEY` constants; the rest of `meta` stays uninterpreted.
+
 ### 4.3 Domain events
 
 > **Implements:** FRD §5.1 (event catalogue, fire conditions, payload shapes).
@@ -281,13 +284,13 @@ The five `Task*` events are `pydantic.BaseModel` subclasses inheriting from `cor
 
 **Why `ABC + @abstractmethod` over `Protocol`.** A `Protocol` is structurally typed; a missing method only fails when first called (`AttributeError` at runtime). An ABC fails at _instantiation_ time with a clear `TypeError: Can't instantiate abstract class ... with abstract methods ...`. The earlier feedback loop is worth the slight rigidity for a small contract.
 
-**The contract.** Seven methods: `add`, `get`, `list`, `replace`, `patch`, `delete`, and `count_by_status` — the last added for the cross-feature strand guard, which the workflows feature reads through its narrow `StatusUsagePort`. The core-CRUD signatures encode three deliberate decisions:
+**The contract.** Five methods: `persist`, `get`, `list`, `remove`, and `count_by_status` — the last added for the cross-feature strand guard, which the workflows feature reads through its narrow `StatusUsagePort`. It is a **persistence port**, not a CRUD/ORM surface. The signatures encode three deliberate decisions:
 
-> **🔒 Internal contract.** `replace()` and `patch()` MUST return `tuple[Task, Task]` — `(pre_mutation_snapshot, updated_row)`. The service layer relies on this single-fetch contract to avoid a redundant `get()` for pre-state. Postgres adapters that don't share SQLAlchemy's identity-map benefit from this directly.
+> **🔒 Internal contract.** `persist(task, *, events)` and `remove(task, *, events)` MUST stage the given `events` into the outbox and commit them **atomically** with the row change — one transaction. This transactional-outbox seam is what makes a task and its events all-or-nothing; the repo takes the events already built, and only `core/outbox.OutboxRecord.from_event` turns them into rows.
 
-1. **`replace()` and `patch()` return `tuple[Task, Task]`** — see the internal contract above.
-2. **`delete()` returns the deleted `Task`** (a snapshot) — the service needs it to publish `TaskDeleted` with the row that no longer exists in the database.
-3. **`get()` raises `TaskNotFoundError`** — the absence is a domain event, not a sentinel return. Callers can let it propagate to the global handler.
+1. **The service owns construction and mutation.** The service builds the `Task` (`Task.from_input`) and mutates it (`apply_replace`/`apply_patch`) *before* calling `persist` — so the repo never constructs a domain entity, and the service has the pre/post snapshots it needs to decide which events fire. `persist` covers both insert and update (`session.add` is a no-op for an already-tracked row).
+2. **`remove(task, *, events)` takes the row to delete** plus its `TaskDeleted` event (built from a pre-delete snapshot so the payload survives the delete).
+3. **`get()` raises `TaskNotFoundError`** — the absence is a domain event, not a sentinel return. Callers can let it propagate to the global handler. A duplicate `title_key` surfaces as `DuplicateTaskError` from the commit; the service re-raises it with the caller's verbatim title.
 
 > **🔒 Internal contract.** `MUTABLE_FIELDS = frozenset({"title", "description", "status", "priority"})` MUST live in `domain/models.py` next to `Task`. The service consumes it for change-detection; `Task.patch()` consumes it to validate the patch dict. The repository deliberately stays out of mutability enforcement — that's a domain concern. Duplicating the set anywhere would let the two consumers drift.
 
@@ -301,9 +304,9 @@ The five `Task*` events are `pydantic.BaseModel` subclasses inheriting from `cor
 
 > **Implements:** FRD §3 (use-case → endpoint mapping), §5.1 (event-firing rules — enforced as service-level unit tests).
 
-Seven methods (`create`, `get`, `list`, `replace`, `patch`, `delete`, plus `legal_moves` for the transitions view), all `async def` — CLAUDE.md mandates async at the service boundary. Three collaborators are injected at construction (constructor injection): a `TaskRepositoryInterface`, a `WorkflowRepositoryInterface`, and an `EventBus`. The service does not know whether its repository is SQLModel-backed, in-memory, or a Postgres adapter.
+Seven methods (`create`, `get`, `list`, `replace`, `patch`, `delete`, plus `legal_moves` for the transitions view), all `async def` — CLAUDE.md mandates async at the service boundary. Two collaborators are injected at construction (constructor injection): a `TaskRepositoryInterface` and a `WorkflowRepositoryInterface`. The service no longer depends on the event bus — it **produces** events and hands them to the repository to stage; the outbox relay is the sole delivery path. The service does not know whether its repository is SQLModel-backed, in-memory, or a Postgres adapter.
 
-The change-detection step iterates `MUTABLE_FIELDS` (not the patched-fields dict) and compares pre- and post-values returned from the repository's tuple contract. This means the service never needs to do a second fetch — the _only_ reason it knew the pre-state is because `replace()` / `patch()` already returned both. The rationale for the layered fire order (`TaskUpdated` → `TaskStatusChanged` → `TaskCompleted`) is captured in §4.3; the conditions themselves are owned by FRD §5.1.
+The change-detection step iterates `MUTABLE_FIELDS` (not the patched-fields dict) and compares a pre-mutation `snapshot()` the service took itself against the mutated row. The service builds the event list from that comparison and passes it to `persist` for transactional staging (an empty list — a genuine no-op PATCH/PUT — skips the commit entirely). The rationale for the layered fire order (`TaskUpdated` → `TaskStatusChanged` → `TaskCompleted`) is captured in §4.3; the conditions themselves are owned by FRD §5.1.
 
 **`EmptyUpdateError(422)`** is raised at the top of `patch()` when `fields` is empty. The `read_only_field` check lives in the global handler (§8.1) because it's a framework-level rejection — Pydantic's `extra="forbid"` raises it before the route handler is even invoked.
 
@@ -360,7 +363,7 @@ Phase 2 sinks (Slack notifier on `TaskCompleted`, audit log on `TaskUpdated`) fo
 The `api/v1/router.py` module is the only place inside the feature that imports `fastapi`. Each of the six endpoints does three things and three things only:
 
 1. Accepts a typed DTO body and query-params via `Annotated[X, Depends(...)]` injections (no `Depends()` defaults — fully Annotated style).
-2. Calls one method on `TaskService`, awaits it, passes `BackgroundTasks` through for event publishing.
+2. Calls one method on `TaskService` and awaits it. There is no `BackgroundTasks` seam: the service builds the events and the repository stages them into the write's transaction; the outbox relay delivers them.
 3. Returns either the raw `Task` (which `response_model=TaskResponse` converts via `from_attributes=True`) or `None` for the 204 path.
 
 The route handlers carry no business logic — every "if duplicate then…" / "if not found then…" branch lives in the service or the repository, surfaces via a typed exception, and is converted to the envelope by the global handler.
@@ -385,19 +388,21 @@ All three concerns — the stable code enum, the exception hierarchy, and the Fa
 
 The `ctx` field is stripped from Pydantic error rows because it carries the non-JSON-serialisable source exception; `msg` carries the text. The handler reads `request.state.request_id` populated by `RequestIDMiddleware` (§8.4) so every envelope is log-correlatable.
 
-### 8.2 Event Bus (`core/event_bus.py`)
+### 8.2 Event Bus + Transactional Outbox (`core/event_bus.py`, `core/outbox.py`)
 
-> **Pure design — no FRD clause.** FRD §5 specifies which events fire; this section captures bus mechanics.
+> **Pure design — no FRD clause for mechanics.** FRD §5 specifies which events fire and the at-least-once/durability contract; this section captures how.
 
-**Pattern.** In-memory publish/subscribe.
+**Pattern.** A durable transactional outbox feeding an in-memory subscription registry.
 
-**API surface.** Three operations: `subscribe(event_type, handler)`, `publish(event, background_tasks)`, and the `Event` base class (`id: UUID`, `occurred_at: datetime`). Subscriptions are stored in a `defaultdict(list)` keyed by event class; `publish()` iterates the handlers for `type(event)` and appends each one to `background_tasks` — so handlers run _after_ the HTTP response is sent.
+**Event Bus surface.** Three operations: `subscribe(event_type, handler)`, `async dispatch(event)`, and the `Event` base class (`id: UUID`, `occurred_at: datetime`). Subscriptions are a `defaultdict(list)` keyed by event class; `dispatch()` awaits each handler for `type(event)` in order. Producers never touch the bus — only the relay calls `dispatch()`.
 
-**Background Tasks integration.** FastAPI's `BackgroundTasks` is the seam: the request handler returns immediately, the response is flushed to the client, then the background tasks run on the same event loop. The bus does not call handlers inline — that would block the response on a slow listener.
+**Outbox surface (`core/outbox.py`).** `OutboxRecord` (`table=True`): `id` (uuid7), `event_type`, `payload` (JSONB), `occurred_at`, `published_at?`, `retry_count`, `last_error`, with a **partial index** on `occurred_at WHERE published_at IS NULL` (only pending rows are indexed, so the poll stays fast regardless of delivered history). The feature repositories stage rows via `OutboxRecord.from_event(event)` inside their single commit — that is what makes a state change and its events atomic. `deliver_pending(session, ...)` claims a batch with `SELECT … FOR UPDATE SKIP LOCKED` (so one relay per worker claims disjoint rows), rebuilds each event from a name→class registry (assembled in `app.main` where both features are imported — keeping `core` service-free), dispatches it, and marks it published; a failure bumps `retry_count`/`last_error` and leaves it pending to retry. `purge_published(session, ...)` deletes delivered rows older than the retention window.
 
-> **Decision.** Phase 1 deliberately omits retry, dead-letter queues, circuit breakers, and deduplication. They have not earned their weight at this scale; revisit if the event bus ever crosses a process boundary (e.g., when the Slack notifier in PRD §12 lands and starts hitting flaky external APIs).
+**Relay lifecycle.** `OutboxRelay` runs the poll loop as an in-process asyncio task started/stopped in the app lifespan (disabled under test, where delivery is driven explicitly). It polls on an interval, and periodically prunes. Multiple workers (`WEB_CONCURRENCY>1`) each run a relay; `SKIP LOCKED` keeps that safe and non-overlapping.
+
+> **Decision.** The outbox now provides retry, dead-lettering (rows past `outbox_max_retries` are kept for triage, never re-polled or auto-pruned), and durable at-least-once delivery — so listeners must be idempotent (dedupe on `event.id`). Deliberately still omitted: exponential backoff (a `next_retry_at` column is the one-line upgrade if a hot-looping failure appears) and cross-process brokers (Kafka/Slack land as new outbox listeners, not a mechanism change). Because retries are un-delayed, `outbox_max_retries × outbox_poll_interval_seconds` **is** the outage a delivery survives — the default 300 × 1.0s ≈ 5 minutes; tune the retry count, not a backoff curve, to widen it. A listener is expected to be fast and non-blocking: the claiming transaction holds its row locks until the poll commits, so stall-prone work belongs behind a listener-enqueued queue rather than inside the handler.
 >
-> **Worker scope (multi-worker).** The bus is **per-worker**: with `WEB_CONCURRENCY>1` a handler sees only the events published in its own process. This is correct for the current log-only listeners — each worker logging its own events is the intended behaviour. It becomes a gap only when a listener needs *global* delivery (notifications, an outbox, a read-model); the fix then is a transactional outbox or Postgres `LISTEN/NOTIFY`. Deliberately **deferred** until such a listener is scheduled (2026-08-03 decision) — building durable cross-worker delivery before a consumer exists is speculative.
+> **Worker scope (multi-worker).** The **bus** is per-worker: each worker registers its own listeners and dispatches only the rows its own relay claimed. Global durable delivery is nonetheless guaranteed by the outbox itself — every staged event is claimed by exactly one worker (`SKIP LOCKED`) and delivered at-least-once, so no event is confined to the process that produced it. What stays per-worker is only listener *registration*, which is correct for the log-only listeners. Cross-process brokers (Kafka, Postgres `LISTEN/NOTIFY`) remain deliberately omitted: a consumer that needs them lands as a new outbox listener, not as a mechanism change.
 
 ### 8.3 Structured logging (`core/logging.py`)
 
@@ -455,8 +460,8 @@ The `lifespan` async context manager owns startup and shutdown:
 
 1. `setup_logging()` — configure `structlog` once.
 2. `seed_workflow_if_missing()` — Alembic owns the production schema (`alembic upgrade head` runs at deploy via the Docker entrypoint, before uvicorn), so lifespan no longer creates tables; it only idempotently seeds the default workflow row under the advisory-lock guard (§8.8). The per-test conftest fixture builds the schema via `init_schema()`.
-3. `EventBus()` instance + `register_task_listeners(bus)` — wire the five `Task*` events to the logging listener. The feature owns its event-type tuple; `app.main` stays decoupled.
-4. `app.state.event_bus = bus` — exposed so `get_event_bus` (§8.8) can hand it to route handlers.
+3. `EventBus()` instance + `register_task_listeners(bus)` and `register_workflow_listeners(bus)` — wire all six events to the logging listener. Each feature owns its event-type tuple and its own registrar; `app.main`, as the composition root, imports both tuples to assemble the `EVENT_REGISTRY` the relay rebuilds events from — which is what keeps `core` itself service-free (§8.2).
+4. `app.state.event_bus = bus` — exposed so the outbox relay dispatches to it and `/diagnose` reports its subscriptions (§8.2). The relay is started here and stopped on shutdown.
 5. On shutdown: emit a structured log line, then `await dispose_engine()` to dispose the async engine and its connection pool.
 
 ### 8.8 Dependency Injection
@@ -467,8 +472,8 @@ The `lifespan` async context manager owns startup and shutdown:
 
 Two layers of providers:
 
-- **Core providers (`core/dependencies.py`):** `get_session()` (yields an `AsyncSession` from the shared `session_factory()`), `get_event_bus(request)` (reads `request.app.state.event_bus` set by the lifespan).
-- **Feature providers (`services/tasks/dependencies.py`):** compose the core providers into feature-level dependencies. `get_repository(session)` returns a `SQLModelTaskRepository`; `get_task_service(repo, events)` returns a fully wired `TaskService`. Each is paired with a typed alias — `SessionDep`, `EventBusDep`, `RepositoryDep`, `TaskServiceDep`, `TaskQueryParamsDep` — so route signatures read like `service: TaskServiceDep` rather than `service: TaskService = Depends(get_task_service)`.
+- **Core providers (`core/dependencies.py`):** `get_session()` (yields an `AsyncSession` from the shared `session_factory()`). The event bus is **not** a DI provider — it lives on `app.state.event_bus` (set by the lifespan), consumed by the outbox relay and `/diagnose`.
+- **Feature providers (`services/tasks/dependencies.py`):** `get_task_service(session)` builds a fully wired `TaskService` (composing both feature repositories over the one request session); `get_actor_roles(x_roles)` parses the provisional `X-Roles` header into a `frozenset[str]` for workflow role-guards. Typed aliases — `SessionDep`, `TaskServiceDep`, `ActorRolesDep`, `TaskQueryParamsDep` — let route signatures read like `service: TaskServiceDep` rather than `service: TaskService = Depends(get_task_service)`.
 
 The Annotated style means:
 
@@ -476,7 +481,9 @@ The Annotated style means:
 2. Aliases compose. `RepositoryDep` is `Annotated[TaskRepositoryInterface, Depends(get_repository)]`; the route declares `service: TaskServiceDep` and never sees the chain underneath.
 3. Swapping a collaborator (e.g. an `AsyncTaskRepository` in Phase 2) means editing one alias and one provider — call sites are unchanged.
 
-**Cross-feature seam (tasks ↔ workflows).** A service that needs another feature's data receives that feature's **repository interface** via constructor injection: `TaskService(repo, workflows: WorkflowRepositoryInterface, events)` consults the active definition; `WorkflowService(repo, tasks: TaskRepositoryInterface, events)` runs the strand guard over `count_by_status()`. Interface modules are import-graph leaves, so the mutual use is acyclic. Each feature's `dependencies.py` imports the *other feature's concrete repository* (never its `dependencies.py`) and constructs both repositories from the **same request `AsyncSession`** — the single-session invariant that lets a workflow-vs-status critical section take a transaction-scoped **reader/writer** advisory lock (`acquire_workflow_guard(shared=...)`) as its first db op and release it at the span's single commit. Task-status writes take the SHARED form (`pg_advisory_xact_lock_shared`) so they run concurrently across workers — they only *read* the definition — while `PUT /v1/workflow` and the seed take the EXCLUSIVE form (`pg_advisory_xact_lock`), which waits for all in-flight task writes and blocks new ones; a redefinition therefore still mutually excludes every task write (the anti-stranding invariant) without task writes serialising against each other. The active definition is **read fresh per request, no process cache**: one PK read on Postgres is trivial, and a cache would fight both PUT invalidation and the per-test schema reset (revisit with profiling data only).
+**Cross-feature seam (tasks ↔ workflows).** A service that needs another feature's data receives that feature's **repository interface** via constructor injection: `TaskService(repo, workflows: WorkflowRepositoryInterface)` consults the active definition; `WorkflowService(repo, usage: StatusUsagePort)` runs the strand guard over `count_by_status()`. Interface modules are import-graph leaves, so the mutual use is acyclic. Each feature's `dependencies.py` imports the *other feature's concrete repository* (never its `dependencies.py`) and constructs both repositories from the **same request `AsyncSession`** — the single-session invariant that lets a workflow-vs-status critical section take a transaction-scoped **reader/writer** advisory lock (`acquire_workflow_guard(shared=...)`) as its first db op and release it at the span's single commit. Task-status writes take the SHARED form (`pg_advisory_xact_lock_shared`) so they run concurrently across workers — they only *read* the definition — while `PUT /v1/workflow` and the seed take the EXCLUSIVE form (`pg_advisory_xact_lock`), which waits for all in-flight task writes and blocks new ones; a redefinition therefore still mutually excludes every task write (the anti-stranding invariant) without task writes serialising against each other. The active definition is **read fresh per request, no process cache**: one PK read on Postgres is trivial, and a cache would fight both PUT invalidation and the per-test schema reset (revisit with profiling data only).
+
+A **WIP-limit** check reads occupancy (`count_by_status()`) under this SHARED lock, so it is deliberately **best-effort**: task writes are not serialised against each other, so two entries into a near-full state can both pass the check at the boundary and overshoot by one. That is the accepted trade-off for an advisory WIP guard (kanban semantics); a strict cap would need a per-state exclusive lock that re-serialises writes into that state.
 
 ### 8.9 Response compression middleware (`core/compression.py`)
 
@@ -799,7 +806,7 @@ Any step failing fails the build. Hurl reports (`reports/hurl/*.html`) are uploa
 
 - **Multi-worker** is supported: `WEB_CONCURRENCY` (default 1) drives `uvicorn --workers`. It is safe **and scalable** on Postgres because the workflow-vs-status critical section is guarded by a transaction-scoped **reader/writer** advisory lock (§8.8): task writes take the SHARED form so they run concurrently across workers, while `PUT /v1/workflow` + the idempotent seed take the EXCLUSIVE form — no shared in-process state survives across workers.
 - **`async def` end to end**: routes, services, and the SQLModel repository are all async (async SQLAlchemy over asyncpg) — the driver is natively async, so there is no threadpool offload. The domain and service layers took the swap as a mechanical `async`/`await` widening; no business logic moved.
-- **Event handlers** run via `BackgroundTasks`, i.e. after the HTTP response is returned to the client. They do not affect request latency.
+- **Event handlers** run in the outbox relay, off the request path (a background poll loop), so they do not affect request latency.
 - **Time is UTC everywhere** (FRD §2.4). Three layers enforce this:
   1. **Container:** `ENV TZ=UTC` in the Dockerfile so library fallbacks to system time still produce UTC.
   2. **Code:** `datetime.now(UTC)` is the only constructor used; naive `datetime` is treated as a bug. A unit test (`app/services/tasks/tests/test_task_model.py`) asserts `Task.created_at.tzinfo is not None`.
@@ -831,7 +838,7 @@ The service is internal and unauthenticated in Phase 1. To avoid accidentally pu
 3. **ABC-based interfaces** at the feature root — clearer instantiation-time errors than `Protocol`.
 4. **Errors carry stable codes**: API consumers can switch on `error.code` without parsing English strings.
 5. **Events fire after writes succeed**, never before — listeners can trust the world.
-6. **Listeners do not block responses** — `BackgroundTasks` keeps the request path fast.
+6. **Listeners do not block responses** — the outbox relay delivers off the request path, keeping it fast.
 7. **Contract tests** pin the repository interface so swapping adapters in Phase 2 is a one-file change with free conformance checking.
 8. **Hybrid test layout** — unit next to code, everything cross-boundary at root.
 9. **Hurl for E2E**, one scenario per file with plain descriptive names.

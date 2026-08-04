@@ -13,7 +13,7 @@ from app.core.constants import ZSTD_MINIMUM_SIZE_BYTES, Environment
 from app.core.database import dispose_engine
 from app.core.diagnose import router as diagnose_router
 from app.core.errors import register_exception_handlers
-from app.core.event_bus import EventBus
+from app.core.event_bus import Event, EventBus
 from app.core.health import router as health_router
 from app.core.logging import logger, setup_logging
 from app.core.middleware import (
@@ -22,11 +22,21 @@ from app.core.middleware import (
     RequestTimeoutMiddleware,
     SecurityHeadersMiddleware,
 )
+from app.core.outbox import OutboxRelay
 from app.services.tasks.api.v1.router import router as tasks_router
+from app.services.tasks.domain.events import TASK_EVENT_TYPES
 from app.services.tasks.infrastructure.listeners import register_listeners as register_task_listeners
 from app.services.workflows.api.v1.router import router as workflow_router
+from app.services.workflows.domain.events import WORKFLOW_EVENT_TYPES
 from app.services.workflows.infrastructure.listeners import register_listeners as register_workflow_listeners
 from app.services.workflows.infrastructure.seed import seed_workflow_if_missing
+
+# Maps each event's stored ``event_type`` back to its class so the outbox relay can rebuild the
+# typed event a listener expects. Assembled here, the one place both features are imported —
+# so ``app.core.outbox`` needs no service import (layer rule 5).
+EVENT_REGISTRY: dict[str, type[Event]] = {
+    event_type.__name__: event_type for event_type in (*TASK_EVENT_TYPES, *WORKFLOW_EVENT_TYPES)
+}
 
 
 def custom_unique_id(route: APIRoute) -> str:
@@ -44,8 +54,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     register_task_listeners(bus)
     register_workflow_listeners(bus)
     app.state.event_bus = bus
+    # The in-process outbox relay delivers staged events. Disabled in tests, where delivery
+    # is driven deterministically instead of by a background poller.
+    relay = None
+    if settings.outbox_relay_enabled:
+        relay = OutboxRelay.from_settings(bus=bus, registry=EVENT_REGISTRY)
+        relay.start()
     logger.info("startup_complete", app_env=settings.app_env)
     yield
+    if relay is not None:
+        await relay.stop()
     await dispose_engine()
     logger.info("shutdown_complete")
 

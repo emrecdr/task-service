@@ -102,3 +102,71 @@ Content-Type: application/json
 HTTP 200
 [Asserts]
 jsonpath "$.status" == "completed"
+
+# 8. Workflow guards over real HTTP. "review" is a brand-new state, so its occupancy
+# starts at zero regardless of what earlier scenarios left behind — the WIP assertions
+# below are deterministic in the shared-DB sequential run. The three occupied states
+# are retained so the strand guard permits the install.
+PUT {{base_url}}/v1/workflow
+Content-Type: application/json
+{
+  "states": [
+    { "name": "new", "initial": true },
+    "in_progress",
+    { "name": "completed", "completes": true },
+    { "name": "review", "wip_limit": 1 }
+  ],
+  "transitions": [
+    { "name": "Start work", "from": "new", "to": "in_progress" },
+    { "name": "Finish", "from": "in_progress", "to": "completed" },
+    { "name": "Escalate", "from": "new", "to": "review", "roles": ["manager"] }
+  ]
+}
+HTTP 200
+[Asserts]
+jsonpath "$.version" == 3
+
+POST {{base_url}}/v1/tasks
+Content-Type: application/json
+{ "title": "hurl guard first", "priority": 2 }
+HTTP 201
+[Captures]
+guard_first_id: jsonpath "$.id"
+
+# 8a. The role guard: no X-Roles header ⇒ the actor holds nothing the transition requires.
+PATCH {{base_url}}/v1/tasks/{{guard_first_id}}
+Content-Type: application/json
+{ "status": "review" }
+HTTP 403
+[Asserts]
+jsonpath "$.error.code" == "transition_forbidden"
+jsonpath "$.error.details.required_roles[0]" == "manager"
+jsonpath "$.error.request_id" matches "[0-9a-f-]{36}"
+
+# 8b. The same move with the role succeeds — and fills "review" to its limit of 1.
+PATCH {{base_url}}/v1/tasks/{{guard_first_id}}
+X-Roles: dev, manager
+Content-Type: application/json
+{ "status": "review" }
+HTTP 200
+[Asserts]
+jsonpath "$.status" == "review"
+
+# 8c. The WIP limit: a second task cannot enter a full state, role or not.
+POST {{base_url}}/v1/tasks
+Content-Type: application/json
+{ "title": "hurl guard second", "priority": 2 }
+HTTP 201
+[Captures]
+guard_second_id: jsonpath "$.id"
+
+PATCH {{base_url}}/v1/tasks/{{guard_second_id}}
+X-Roles: manager
+Content-Type: application/json
+{ "status": "review" }
+HTTP 409
+[Asserts]
+jsonpath "$.error.code" == "wip_limit_exceeded"
+jsonpath "$.error.details.state" == "review"
+jsonpath "$.error.details.limit" == 1
+jsonpath "$.error.details.current" == 1

@@ -8,8 +8,9 @@ from sqlmodel import Field, SQLModel, col
 
 from app.core.datetime_utils import ensure_utc
 from app.core.errors import AppError
+from app.core.outbox import stage_events
 from app.services.workflows.domain.definition import Workflow
-from app.services.workflows.interfaces import StoredWorkflow, WorkflowRepositoryInterface
+from app.services.workflows.interfaces import StoredWorkflow, WorkflowEventFactory, WorkflowRepositoryInterface
 from app.services.workflows.serialization import workflow_from_document, workflow_to_document
 
 # Postgres advisory-lock key serialising the "workflow-definition vs task-status"
@@ -64,15 +65,22 @@ class SQLModelWorkflowRepository(WorkflowRepositoryInterface):
             created_at=ensure_utc(record.created_at),
         )
 
-    async def replace_active(self, workflow: Workflow) -> StoredWorkflow:
+    async def replace_active(
+        self,
+        workflow: Workflow,
+        *,
+        make_events: WorkflowEventFactory | None = None,
+    ) -> StoredWorkflow:
         highest = await self._session.scalar(select(func.max(WorkflowRecord.version)))
+        version = (highest or 0) + 1
         document = workflow_to_document(workflow)
-        record = WorkflowRecord(version=(highest or 0) + 1, document=document)
+        record = WorkflowRecord(version=version, document=document)
         self._session.add(record)
+        stage_events(self._session, make_events(version) if make_events is not None else ())
         await self._session.commit()
         return StoredWorkflow(
             workflow=workflow,
             document=document,
-            version=record.version,
+            version=version,
             created_at=ensure_utc(record.created_at),
         )

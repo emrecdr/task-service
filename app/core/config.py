@@ -13,6 +13,11 @@ from app.core.constants import (
     DEFAULT_DB_POOL_TIMEOUT_SECONDS,
     DEFAULT_DB_STATEMENT_TIMEOUT_MS,
     DEFAULT_MAX_REQUEST_BODY_BYTES,
+    DEFAULT_OUTBOX_BATCH_SIZE,
+    DEFAULT_OUTBOX_CLEANUP_INTERVAL_SECONDS,
+    DEFAULT_OUTBOX_MAX_RETRIES,
+    DEFAULT_OUTBOX_POLL_INTERVAL_SECONDS,
+    DEFAULT_OUTBOX_RETENTION_DAYS,
     DEFAULT_REQUEST_TIMEOUT_SECONDS,
     Environment,
 )
@@ -69,6 +74,17 @@ class Settings(BaseSettings):
     db_statement_timeout_ms: int = Field(default=DEFAULT_DB_STATEMENT_TIMEOUT_MS, ge=0)
     db_lock_timeout_ms: int = Field(default=DEFAULT_DB_LOCK_TIMEOUT_MS, ge=0)
     db_pool_timeout_seconds: float = Field(default=DEFAULT_DB_POOL_TIMEOUT_SECONDS, gt=0)
+
+    # Transactional-outbox relay. Enabled in real deployments; the test harness sets
+    # ``OUTBOX_RELAY_ENABLED=false`` so the poller never races per-test assertions (delivery
+    # is driven deterministically from tests instead). Every worker runs a poller — the
+    # ``FOR UPDATE SKIP LOCKED`` claim keeps that safe and non-overlapping.
+    outbox_relay_enabled: bool = True
+    outbox_poll_interval_seconds: float = Field(default=DEFAULT_OUTBOX_POLL_INTERVAL_SECONDS, gt=0)
+    outbox_batch_size: int = Field(default=DEFAULT_OUTBOX_BATCH_SIZE, ge=1)
+    outbox_max_retries: int = Field(default=DEFAULT_OUTBOX_MAX_RETRIES, ge=1)
+    outbox_retention_days: int = Field(default=DEFAULT_OUTBOX_RETENTION_DAYS, ge=1)
+    outbox_cleanup_interval_seconds: float = Field(default=DEFAULT_OUTBOX_CLEANUP_INTERVAL_SECONDS, gt=0)
 
     @field_validator("log_level")
     @classmethod

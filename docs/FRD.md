@@ -42,6 +42,13 @@ Task states are **not** a code-level enum: they are defined by the active workfl
 
 Transitions are **governed by the active workflow definition**: a status change is legal only if the definition names a transition for that `(from, to)` pair, and a create may only enter a state marked `initial`. Illegal moves are rejected with `409 invalid_transition` (§4). Same-state writes are no-moves and always succeed. The shipped default definition is behavior-identical to Phase 1's original any → any contract; installing a restrictive definition via `PUT /v1/workflow` changes what is legal at runtime, no deploy required.
 
+Beyond legality, a definition may declare two **guards** as `meta`, enforced on every entering move (a same-state no-move triggers neither):
+
+- **Role guard** — a transition's `{"roles": ["manager", ...]}`: the acting caller must hold at least one listed role, else `403 transition_forbidden`. Roles are read from the provisional `X-Roles` request header (comma-separated) until authentication lands — an **unauthenticated stand-in**, not a security boundary; the authenticated principal's roles will supply this seam later with no engine change.
+- **WIP limit** — a state's `{"wip_limit": N}`: entering the state is refused with `409 wip_limit_exceeded` once it already holds `N` work items. The check is **best-effort** (occupancy is read without serializing concurrent writers, so the boundary may briefly overshoot — the kanban norm), and occupancy is queried only when the active definition declares any limit.
+
+Both guard values are validated when the definition is stored (`wip_limit` a non-negative int; `roles` a non-empty list of non-empty strings), so a malformed guard fails at `PUT /v1/workflow` time, not on a later task write.
+
 ### 2.4 Timezone policy (single source of truth: UTC)
 
 The PDF notes the team is _"spread across multiple time zones."_ To avoid any ambiguity in stand-ups and audit trails, the service treats time as follows:
@@ -158,7 +165,9 @@ Malformed JSON request bodies (which FastAPI would otherwise surface as a raw `4
 | Empty/over-length title, priority out of range, malformed body      | (Pydantic `ValidationError`) | `422 Unprocessable Entity`  | `validation_error` |
 | Status in a request **body** that is no state of the active workflow | `UnknownStatusError` (service-raised) | `422 Unprocessable Entity`  | `unknown_status` |
 | Status change the active workflow does not allow (or create into a non-entry state) | `InvalidTransitionError`     | `409 Conflict`              | `invalid_transition` |
-| `PUT /v1/workflow` body that fails definition validation (all problems listed at once) — including server-owned `version`/`created_at` keys, rejected as unknown top-level keys (deliberately **not** `read_only_field`: the body is a definition document, not the resource) | `WorkflowValidationError`    | `422 Unprocessable Entity`  | `invalid_workflow_definition` |
+| Status change through a transition whose `roles` guard the actor does not satisfy | `TransitionForbiddenError`   | `403 Forbidden`             | `transition_forbidden` |
+| Entering a state that is already at its `wip_limit`                  | `WipLimitExceededError`      | `409 Conflict`              | `wip_limit_exceeded` |
+| `PUT /v1/workflow` body that fails definition validation (all problems listed at once) — including server-owned `version`/`created_at` keys, rejected as unknown top-level keys (deliberately **not** `read_only_field`: the body is a definition document, not the resource), and malformed guard meta (`wip_limit` not a non-negative int, `roles` not a non-empty list of non-empty strings) | `WorkflowValidationError`    | `422 Unprocessable Entity`  | `invalid_workflow_definition` |
 | `PUT /v1/workflow` that would strand tasks in undefined states      | `WorkflowStatesInUseError`   | `409 Conflict`              | `workflow_states_in_use` |
 | PATCH body with no fields                                           | `EmptyUpdateError`           | `422 Unprocessable Entity`  | `empty_update`     |
 | Attempt to set server-owned field on PUT/PATCH (`id`, `created_at`) | `ReadOnlyFieldError`         | `422 Unprocessable Entity`  | `read_only_field`  |
@@ -171,7 +180,7 @@ A single global FastAPI exception handler converts domain exceptions to the erro
 
 ## 5. Domain Event System
 
-The service must ship an in-process **Event Bus** (publish/subscribe). Domain events are dispatched **after** the repository write succeeds and **before** the HTTP response is finalized; listeners run via FastAPI `BackgroundTasks` so they never block the response.
+The service ships a durable **transactional outbox**. Each domain event is written to an `outbox` table **inside the same transaction** as the row change it describes, so the state change and its events commit or roll back together — an event is never lost to a crash between commit and delivery. An in-process **relay** then delivers each pending event to the in-process **Event Bus** listeners and marks it published. Delivery is **at-least-once** and happens off the request path, so listeners never block the response — and must be **idempotent** (they dedupe on `event.id`, which survives re-delivery).
 
 ### 5.1 Events
 
@@ -183,9 +192,11 @@ The service must ship an in-process **Event Bus** (publish/subscribe). Domain ev
 | `TaskCompleted`     | When a status change **enters a state whose definition carries `"completes": true`** (the seed marks `completed`). Fires in addition to `TaskStatusChanged`. | `task: Task`                                                                |
 | `TaskDeleted`       | After successful DELETE.                                                                 | `task: Task` (the deleted snapshot)                                         |
 
-Payloads carry detached domain `Task` snapshots (`Task.snapshot()`), never API DTOs — domain events cannot depend on the application layer.
+Payloads carry detached domain `Task` snapshots (`Task.snapshot()`), never API DTOs — domain events cannot depend on the application layer. Each event is serialized to the outbox row as JSONB (`event.model_dump(mode="json")`) and reconstructed on delivery via a class registry keyed by the event's type name.
 
 `TaskCompleted` is a convenience event so listeners do not need to filter `TaskStatusChanged` payloads when they only care about completion.
+
+A failed delivery is retried on a later poll (`retry_count` climbs, `last_error` records the reason); past a retry ceiling the row is left as a dead-letter for triage and never auto-pruned. Only successfully **delivered** rows age out — a periodic prune deletes rows whose `published_at` is at least the retention window (7 days) old.
 
 The workflows feature adds a sixth event: `WorkflowUpdated` (`version: int`, `states: list[str]`), published after every successful `PUT /v1/workflow` — definition changes are the highest-impact admin action and always reach the logs.
 

@@ -17,6 +17,8 @@ from app.services.workflows.domain.definition import Workflow
 from app.services.workflows.domain.models import (
     RESERVED_STATE_FIELDS,
     RESERVED_TRANSITION_FIELDS,
+    ROLES_META_KEY,
+    WIP_LIMIT_META_KEY,
     State,
     Transition,
     TransitionTable,
@@ -110,6 +112,33 @@ def _extract_meta(entry: dict[str, Any], reserved: frozenset[str]) -> dict[str, 
     return {key: value for key, value in entry.items() if key not in reserved}
 
 
+def _wip_limit_error(meta: dict[str, Any]) -> str | None:
+    """The engine-interpreted ``wip_limit`` guard must be a non-negative int (``bool`` excluded —
+    it is an ``int`` subclass). Absent ⇒ no limit. Validated here so a bad limit fails at
+    definition time, not as a 500 on a later task write."""
+    if WIP_LIMIT_META_KEY not in meta:
+        return None
+    limit = meta[WIP_LIMIT_META_KEY]
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
+        return f"{WIP_LIMIT_META_KEY!r} must be a non-negative integer"
+    return None
+
+
+def _roles_error(meta: dict[str, Any]) -> str | None:
+    """The engine-interpreted ``roles`` guard must be a non-empty list of non-empty strings.
+    Absent ⇒ no guard (omit it rather than spelling an empty list)."""
+    if ROLES_META_KEY not in meta:
+        return None
+    roles = meta[ROLES_META_KEY]
+    message = f"{ROLES_META_KEY!r} must be a non-empty list of non-empty strings"
+    if not isinstance(roles, list):
+        return message
+    items = cast(list[Any], roles)
+    if not items or not all(isinstance(item, str) and item.strip() for item in items):
+        return message
+    return None
+
+
 def _parse_state(i: int, entry: Any, errors: list[str]) -> State | None:
     """A state is a string (shorthand) or an object with name/initial/meta.
 
@@ -125,6 +154,10 @@ def _parse_state(i: int, entry: Any, errors: list[str]) -> State | None:
                 errors.append(f"states[{i}]: 'initial' must be a boolean")
                 return None
             meta = _extract_meta(entry, RESERVED_STATE_FIELDS)
+            wip_error = _wip_limit_error(meta)
+            if wip_error is not None:
+                errors.append(f"states[{i}]: {wip_error}")
+                return None
         case dict():
             errors.append(f"states[{i}]: object form requires a non-empty string 'name'")
             return None
@@ -146,6 +179,9 @@ def _parse_transitions(raw_transitions: list[Any], known: set[str], errors: list
             continue
         name, from_state, to_state, meta = fields
         problems = _transition_rule_errors(i, name, from_state, to_state, known, parsed)
+        roles_error = _roles_error(meta)
+        if roles_error is not None:
+            problems.append(f"transitions[{i}]: {roles_error}")
         if problems:
             errors.extend(problems)
             continue

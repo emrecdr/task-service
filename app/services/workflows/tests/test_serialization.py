@@ -149,6 +149,32 @@ def test_reachability_considers_all_entry_states() -> None:
     assert workflow.unreachable_states() == set()
 
 
+def test_from_document_accepts_valid_guard_meta() -> None:
+    document = {
+        "states": [{"name": "a", "initial": True, "wip_limit": 0}, {"name": "b", "wip_limit": 5}],
+        "transitions": [{"name": "Go", "from": "a", "to": "b", "roles": ["manager", "admin"]}],
+    }
+
+    workflow = workflow_from_document(document)
+
+    assert workflow.states[0].meta == {"wip_limit": 0}
+    assert workflow.transitions[("a", "b")].meta == {"roles": ["manager", "admin"]}
+
+
+def test_from_document_rejects_bad_wip_limit() -> None:
+    for bad in (-1, "3", 1.5, True):  # negative, string, float, and bool are all invalid
+        with pytest.raises(WorkflowValidationError, match="'wip_limit' must be a non-negative integer"):
+            workflow_from_document({"states": [{"name": "a", "initial": True, "wip_limit": bad}], "transitions": []})
+
+
+def test_from_document_rejects_bad_roles() -> None:
+    for bad in ("manager", [], ["ok", ""], ["ok", 3]):  # not-a-list, empty, blank member, non-string member
+        with pytest.raises(WorkflowValidationError, match="'roles' must be a non-empty list of non-empty strings"):
+            workflow_from_document(
+                {"states": ["a", "b"], "transitions": [{"name": "Go", "from": "a", "to": "b", "roles": bad}]}
+            )
+
+
 def test_validation_error_is_an_enveloped_app_error() -> None:
     """The ported error must ride the central handler, never a bare 500."""
     error = WorkflowValidationError(["problem one", "problem two"])

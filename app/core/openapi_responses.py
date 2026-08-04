@@ -94,6 +94,17 @@ NOT_FOUND_RESPONSE: Final[dict[str, Any]] = _envelope_response(
 )
 
 
+# ---- 403 (task create / replace / patch — workflow role guard) ----
+
+FORBIDDEN_RESPONSE: Final[dict[str, Any]] = _envelope_response(
+    example=_envelope_example(
+        code=ErrorCode.TRANSITION_FORBIDDEN,
+        message="You do not have a role permitted to make this transition.",
+        details={"transition": "Approve", "required_roles": ["manager"], "actor_roles": []},
+    ),
+)
+
+
 # ---- 409 (task create / replace / patch) ----
 
 CONFLICT_RESPONSE: Final[dict[str, Any]] = _envelope_response(
@@ -112,6 +123,14 @@ CONFLICT_RESPONSE: Final[dict[str, Any]] = _envelope_response(
                 code=ErrorCode.INVALID_TRANSITION,
                 message="The active workflow does not allow this move.",
                 details={"from": "new", "to": "completed", "allowed": ["in_progress"]},
+            ),
+        },
+        "wip_limit_exceeded": {
+            "summary": "The target state is at its work-in-progress limit",
+            "value": _envelope_example(
+                code=ErrorCode.WIP_LIMIT_EXCEEDED,
+                message="The target state is at its work-in-progress limit.",
+                details={"state": "in_progress", "limit": 3, "current": 3},
             ),
         },
     },

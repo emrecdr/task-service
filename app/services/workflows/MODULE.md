@@ -21,8 +21,8 @@ class, and a collect-all-errors document boundary. `WorkflowEngine`
 (`domain/engine.py`) applies an active definition's rules — entry
 resolution, move legality, completion — so any status-governed feature
 (tasks today) drives one engine instead of re-deriving the taxonomy;
-`TaskService` remains the transactional executor and the `EventBus` the
-observer seam.
+`TaskService` remains the transactional executor and the transactional
+outbox the durable observer seam.
 
 ## Model
 
@@ -92,11 +92,27 @@ concurrently across workers instead of serialising against each other.
 | `WorkflowValidationError`  | 422    | `invalid_workflow_definition` |
 | `WorkflowStatesInUseError` | 409    | `workflow_states_in_use`      |
 
-`WorkflowEngine` raises `InvalidTransitionError` (409 `invalid_transition`)
-and `UnknownStatusError` (422 `unknown_status`); both live in
-`app/core/errors.py` — a domain engine may not import a feature `errors.py`,
-so they sit in core alongside the other cross-cutting enforcement error,
-`ReadOnlyFieldError`.
+`WorkflowEngine` raises `InvalidTransitionError` (409 `invalid_transition`),
+`UnknownStatusError` (422 `unknown_status`), `TransitionForbiddenError`
+(403 `transition_forbidden`, role guard) and `WipLimitExceededError`
+(409 `wip_limit_exceeded`); all live in `app/core/errors.py` — a domain engine
+may not import a feature `errors.py`, so they sit in core alongside the other
+cross-cutting enforcement error, `ReadOnlyFieldError`.
+
+## Guards (`meta`-declared)
+
+The engine interprets three `meta` keys (constants in `domain/models.py`); the rest of
+`meta` stays uninterpreted. A `TransitionContext(roles, occupancy)` — built by the calling
+service per write — supplies the runtime facts the definition itself can't hold:
+
+| key | on | effect |
+| --- | --- | --- |
+| `completes` | state | entering it fires `TaskCompleted` |
+| `wip_limit` | state | entering a full state → 409 `wip_limit_exceeded` (best-effort; occupancy read unserialised) |
+| `roles` | transition | actor must hold one of them → else 403 `transition_forbidden` |
+
+`wip_limit` (non-negative int) and `roles` (non-empty list of non-empty strings) are validated
+at the `PUT /v1/workflow` boundary, so a bad guard fails at definition time.
 
 ## Layering
 

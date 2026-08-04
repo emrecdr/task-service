@@ -55,9 +55,11 @@ with the document vocabulary in `workflows/domain/models.py`.
 
 ## Events (FRD §5.1)
 
-All five are defined in `domain/events.py` and fire post-commit via
-`EventBus.publish(event, background_tasks)` so listeners never block the
-HTTP response:
+All five are defined in `domain/events.py`. The service builds them and hands
+them to the repository, which stages them into the `outbox` table **in the same
+transaction** as the row change; the in-process outbox relay then delivers them
+to listeners off the request path (at-least-once), so they never block the HTTP
+response:
 
 | event                | fires when                                                  |
 | -------------------- | ----------------------------------------------------------- |
@@ -69,10 +71,10 @@ HTTP response:
 
 Mutable fields (`{"title", "description", "status", "priority"}`) are the
 single source of truth in `domain/models.py::MUTABLE_FIELDS`. `Task.changed_fields()`
-derives the changed set from it — the repository gates its commit on that method
-and the service gates event fan-out on it — while `Task.apply_patch()` uses it for
-patch-dict validation. The repository stays out of mutability enforcement (domain
-concern).
+derives the changed set from it — the service gates both the write and event fan-out
+on it (a no-op change skips `persist` entirely, committing nothing and staging no
+events) — while `Task.apply_patch()` uses it for patch-dict validation. The repository
+stays out of mutability enforcement (domain concern).
 
 ## Errors (FRD §4)
 
@@ -91,10 +93,14 @@ envelope and surfaces as 500.
 sets a server-managed field (`id`, `created_at`); the exception class
 (`ReadOnlyFieldError`) lives in `app.core.errors`, not this feature.
 
-`invalid_transition` (409) and `unknown_status` (422) surface on the write
-endpoints but are raised by `WorkflowEngine`; their classes
-(`InvalidTransitionError`, `UnknownStatusError`) also live in
-`app.core.errors`, not this feature.
+`invalid_transition` (409), `unknown_status` (422), `transition_forbidden`
+(403) and `wip_limit_exceeded` (409) surface on the write endpoints but are
+raised by `WorkflowEngine`; their classes (`InvalidTransitionError`,
+`UnknownStatusError`, `TransitionForbiddenError`, `WipLimitExceededError`)
+also live in `app.core.errors`, not this feature. The last two are the
+`meta`-declared workflow guards: a transition's `roles` guard refuses an actor
+who holds none of them (roles arrive via the provisional `X-Roles` header), and
+a state's `wip_limit` refuses entry once it is full.
 
 ## Endpoints
 
@@ -102,13 +108,13 @@ All under `settings.api_prefix` (default `/v1`):
 
 | method | path             | response | events fired                         |
 | ------ | ---------------- | -------- | ------------------------------------ |
-| POST   | `/tasks`         | 201      | `TaskCreated`                        |
-| GET    | `/tasks`         | 200      | —                                    |
-| GET    | `/tasks/{id}`    | 200/404  | —                                    |
-| PUT    | `/tasks/{id}`    | 200/404/409 | `TaskUpdated`(+`StatusChanged`+`Completed`)* |
-| PATCH  | `/tasks/{id}`    | 200/404/409/422 | same as PUT*                     |
-| DELETE | `/tasks/{id}`    | 204/404  | `TaskDeleted`                        |
-| GET    | `/tasks/{id}/transitions` | 200/404 | — (legal moves + definition `meta` for UI buttons) |
+| POST   | `/tasks`         | 201/409/422 | `TaskCreated`                     |
+| GET    | `/tasks`         | 200/422  | —                                    |
+| GET    | `/tasks/{id}`    | 200/404/422 | —                                 |
+| PUT    | `/tasks/{id}`    | 200/403/404/409/422 | `TaskUpdated`(+`StatusChanged`+`Completed`)* |
+| PATCH  | `/tasks/{id}`    | 200/403/404/409/422 | same as PUT*                 |
+| DELETE | `/tasks/{id}`    | 204/404/422 | `TaskDeleted`                     |
+| GET    | `/tasks/{id}/transitions` | 200/404/422 | — (legal moves + definition `meta` for UI buttons) |
 
 \* events only fire when the corresponding fields actually changed.
 

@@ -1,6 +1,6 @@
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks
+from fastapi import APIRouter
 
 from app.core.openapi_responses import (
     WORKFLOW_CONFLICT_RESPONSE,
@@ -34,9 +34,6 @@ async def get_workflow(service: WorkflowServiceDep) -> WorkflowResponse:
 )
 async def replace_workflow(
     document: dict[str, Any],
-    background_tasks: BackgroundTasks,
     service: WorkflowServiceDep,
 ) -> WorkflowResponse:
-    return WorkflowResponse.from_stored(
-        await service.replace_active(document=document, background_tasks=background_tasks)
-    )
+    return WorkflowResponse.from_stored(await service.replace_active(document=document))

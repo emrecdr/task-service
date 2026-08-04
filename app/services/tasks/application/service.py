@@ -1,9 +1,7 @@
 import uuid
 from typing import Any
 
-from fastapi import BackgroundTasks
-
-from app.core.event_bus import EventBus
+from app.core.event_bus import Event
 from app.services.tasks.application.dto import TaskListParams
 from app.services.tasks.domain.events import (
     TaskCompleted,
@@ -13,9 +11,9 @@ from app.services.tasks.domain.events import (
     TaskUpdated,
 )
 from app.services.tasks.domain.models import Task
-from app.services.tasks.errors import EmptyUpdateError
+from app.services.tasks.errors import DuplicateTaskError, EmptyUpdateError
 from app.services.tasks.interfaces import TaskRepositoryInterface
-from app.services.workflows.domain.engine import WorkflowEngine
+from app.services.workflows.domain.engine import TransitionContext, WorkflowEngine
 from app.services.workflows.domain.models import Transition
 from app.services.workflows.interfaces import WorkflowRepositoryInterface
 
@@ -26,11 +24,9 @@ class TaskService:
         *,
         repo: TaskRepositoryInterface,
         workflows: WorkflowRepositoryInterface,
-        events: EventBus,
     ) -> None:
         self._repo = repo
         self._workflows = workflows
-        self._events = events
 
     async def _engine(self) -> WorkflowEngine:
         """Wrap the active definition, read fresh. Read-only callers (``legal_moves``) use
@@ -53,12 +49,14 @@ class TaskService:
         description: str | None,
         status: str | None,
         priority: int,
-        background_tasks: BackgroundTasks,
     ) -> Task:
         engine = await self._guarded_engine()
-        resolved = engine.resolve_entry(status)
-        task = await self._repo.add(title=title, description=description, status=resolved, priority=priority)
-        self._events.publish(TaskCreated(task=task.snapshot()), background_tasks)
+        # A create enters a state (so it is WIP-checked) but is not a transition, so no role
+        # guard can apply — occupancy is the only context a create needs.
+        context = await self._context(engine, from_status=None, to_status=status)
+        resolved = engine.resolve_entry(status, context=context)
+        task = Task.from_input(title=title, description=description, status=resolved, priority=priority)
+        await self._persist(task, events=[TaskCreated(task=task.snapshot())], raw_title=title)
         return task
 
     async def get(self, task_id: uuid.UUID) -> Task:
@@ -87,77 +85,92 @@ class TaskService:
         description: str | None,
         status: str | None,
         priority: int,
-        background_tasks: BackgroundTasks,
+        roles: frozenset[str] = frozenset(),
     ) -> Task:
         engine = await self._guarded_engine()
-        # Fetching current also gives 404 precedence over any 409/422 the checks raise.
-        current = await self._repo.get(task_id)
+        # Fetching current also gives 404 precedence over any 403/409/422 the checks raise.
+        task = await self._repo.get(task_id)
         target = engine.default_entry if status is None else status
-        engine.check_move(current.status, target)
-        previous, updated = await self._repo.replace(
-            task_id,
-            title=title,
-            description=description,
-            status=target,
-            priority=priority,
-        )
-        self._publish_update_events(previous, updated, engine, background_tasks)
-        return updated
+        context = await self._context(engine, roles, from_status=task.status, to_status=target)
+        engine.check_move(task.status, target, context=context)
+        # Snapshot after the checks — a refused write throws the copy away (matches ``patch``).
+        previous = task.snapshot()
+        task.apply_replace(title=title, description=description, status=target, priority=priority)
+        await self._persist_update(task, previous, engine, raw_title=title)
+        return task
 
     async def patch(
         self,
         task_id: uuid.UUID,
         *,
         fields: dict[str, Any],
-        background_tasks: BackgroundTasks,
+        # The anonymous actor is the safe default: a role-guarded transition refuses an empty
+        # set, so a caller that forgets ``roles`` fails closed rather than bypassing the guard.
+        roles: frozenset[str] = frozenset(),
     ) -> Task:
         if not fields:
             raise EmptyUpdateError()
         # A status change consults the workflow, so it takes the guard + reads the definition
         # up front; a non-status patch skips both. ``engine is None`` ⇒ status cannot change.
         engine = await self._guarded_engine() if "status" in fields else None
-        current = await self._repo.get(task_id)  # 404 precedence over any 409/422 below
+        task = await self._repo.get(task_id)  # 404 precedence over any 403/409/422 below
         if engine is not None:
-            engine.check_move(current.status, fields["status"])
-        previous, updated = await self._repo.patch(task_id, **fields)
-        self._publish_update_events(previous, updated, engine, background_tasks)
-        return updated
+            target = fields["status"]
+            context = await self._context(engine, roles, from_status=task.status, to_status=target)
+            engine.check_move(task.status, target, context=context)
+        previous = task.snapshot()
+        task.apply_patch(fields)
+        # ``fields["title"]`` (raw) if the patch renames; otherwise no collision is possible.
+        await self._persist_update(task, previous, engine, raw_title=fields.get("title", task.title))
+        return task
 
-    async def delete(
+    async def delete(self, task_id: uuid.UUID) -> None:
+        task = await self._repo.get(task_id)
+        snapshot = task.snapshot()
+        await self._repo.remove(task, events=[TaskDeleted(task=snapshot)])
+
+    async def _context(
         self,
-        task_id: uuid.UUID,
+        engine: WorkflowEngine,
+        roles: frozenset[str] = frozenset(),
         *,
-        background_tasks: BackgroundTasks,
-    ) -> None:
-        snapshot = await self._repo.delete(task_id)
-        self._events.publish(TaskDeleted(task=snapshot), background_tasks)
+        from_status: str | None,
+        to_status: str | None,
+    ) -> TransitionContext:
+        """The guard context for one write: the actor's roles, plus per-status occupancy. The
+        occupancy round-trip is issued only when the engine says this write can actually hit a
+        ``wip_limit`` — the engine owns that rule, the service only supplies the facts. ``roles``
+        defaults to the anonymous actor, which a role-guarded transition refuses."""
+        needs = engine.needs_occupancy(from_status=from_status, to_status=to_status)
+        return TransitionContext(roles=roles, occupancy=await self._repo.count_by_status() if needs else {})
 
-    def _publish_update_events(
-        self,
-        previous: Task,
-        updated: Task,
-        engine: WorkflowEngine | None,
-        background_tasks: BackgroundTasks,
+    async def _persist_update(
+        self, updated: Task, previous: Task, engine: WorkflowEngine | None, *, raw_title: str
     ) -> None:
-        """``engine`` is None only when the write could not have changed status."""
+        """Persist a mutated task with its update events — or, if nothing actually changed, do
+        nothing (no commit, no events). ``engine`` is None only when status could not change."""
+        events = self._update_events(updated, previous, engine)
+        if events:
+            await self._persist(updated, events=events, raw_title=raw_title)
+
+    async def _persist(self, task: Task, *, events: list[Event], raw_title: str) -> None:
+        """Persist through the repo, but re-raise a duplicate with the caller's title verbatim:
+        the repo only sees the normalised ``task.title``, and the contract echoes raw input."""
+        try:
+            await self._repo.persist(task, events=events)
+        except DuplicateTaskError as err:
+            raise DuplicateTaskError(details={"title": raw_title}, original_error=err.original_error) from err
+
+    def _update_events(self, updated: Task, previous: Task, engine: WorkflowEngine | None) -> list[Event]:
         changed = updated.changed_fields(previous)
         if not changed:
-            return
-        updated_snapshot = updated.snapshot()
-        self._events.publish(
-            TaskUpdated(task=updated_snapshot, previous=previous, changed_fields=changed),
-            background_tasks,
-        )
+            return []
+        snapshot = updated.snapshot()
+        events: list[Event] = [TaskUpdated(task=snapshot, previous=previous, changed_fields=changed)]
         if "status" not in changed:
-            return
+            return events
         assert engine is not None  # status changed ⇒ the caller consulted the definition
-        self._events.publish(
-            TaskStatusChanged(
-                task=updated_snapshot,
-                from_status=previous.status,
-                to_status=updated.status,
-            ),
-            background_tasks,
-        )
+        events.append(TaskStatusChanged(task=snapshot, from_status=previous.status, to_status=updated.status))
         if engine.completes(updated.status):
-            self._events.publish(TaskCompleted(task=updated_snapshot), background_tasks)
+            events.append(TaskCompleted(task=snapshot))
+        return events

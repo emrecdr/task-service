@@ -10,11 +10,9 @@ without the lock, two would read the same max(version) and collide on the unique
 import asyncio
 
 from app.core import database
-from app.core.event_bus import EventBus
 from app.services.workflows.application.service import WorkflowService
 from app.services.workflows.infrastructure.repository import SQLModelWorkflowRepository
 from app.services.workflows.interfaces import StatusUsagePort
-from fastapi import BackgroundTasks
 
 _DOC = {
     "states": [{"name": "open", "initial": True}, "closed"],
@@ -30,13 +28,10 @@ class _NoUsage(StatusUsagePort):
 async def test_concurrent_workflow_writes_get_distinct_versions() -> None:
     n = 8
     sessions = [database.get_sessionmaker()() for _ in range(n)]
-    services = [
-        WorkflowService(repo=SQLModelWorkflowRepository(s), usage=_NoUsage(), events=EventBus()) for s in sessions
-    ]
-    bt = BackgroundTasks()
+    services = [WorkflowService(repo=SQLModelWorkflowRepository(s), usage=_NoUsage()) for s in sessions]
 
     async def put(svc: WorkflowService) -> int:
-        stored = await svc.replace_active(document=_DOC, background_tasks=bt)
+        stored = await svc.replace_active(document=_DOC)
         return stored.version
 
     try:

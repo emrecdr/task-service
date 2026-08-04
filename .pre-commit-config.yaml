@@ -1,3 +1,7 @@
+# Generated Graphify artifacts are machine-written and not hand-maintained — the same
+# exclusion ruff already applies (pyproject.toml [tool.ruff] exclude).
+exclude: ^graphify-out/
+
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0

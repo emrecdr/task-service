@@ -24,6 +24,8 @@ class ErrorCode(StrEnum):
     TASK_NOT_FOUND = "task_not_found"
     INVALID_TRANSITION = "invalid_transition"
     UNKNOWN_STATUS = "unknown_status"
+    TRANSITION_FORBIDDEN = "transition_forbidden"
+    WIP_LIMIT_EXCEEDED = "wip_limit_exceeded"
     INVALID_WORKFLOW_DEFINITION = "invalid_workflow_definition"
     WORKFLOW_STATES_IN_USE = "workflow_states_in_use"
     PAYLOAD_TOO_LARGE = "payload_too_large"
@@ -64,6 +66,10 @@ class NotFoundError(AppError):
     status_code = status.HTTP_404_NOT_FOUND
 
 
+class ForbiddenError(AppError):
+    status_code = status.HTTP_403_FORBIDDEN
+
+
 class ReadOnlyFieldError(ValidationError):
     error_code = ErrorCode.READ_ONLY_FIELD
     detail = "Field is server-managed and cannot be set by the caller."
@@ -84,6 +90,22 @@ class UnknownStatusError(ValidationError):
 
     error_code = ErrorCode.UNKNOWN_STATUS
     detail = "Unknown workflow state."
+
+
+class TransitionForbiddenError(ForbiddenError):
+    """The actor holds none of the roles a transition's ``roles`` guard requires. Raised by
+    ``WorkflowEngine`` — a workflow-enforcement error like ``InvalidTransitionError``."""
+
+    error_code = ErrorCode.TRANSITION_FORBIDDEN
+    detail = "You do not have a role permitted to make this transition."
+
+
+class WipLimitExceededError(ConflictError):
+    """Entering a state would exceed its ``wip_limit``. Raised by ``WorkflowEngine`` — a
+    workflow-enforcement error like ``InvalidTransitionError``."""
+
+    error_code = ErrorCode.WIP_LIMIT_EXCEEDED
+    detail = "The target state is at its work-in-progress limit."
 
 
 _SERVER_OWNED_FIELDS: Final[frozenset[str]] = frozenset({"id", "created_at"})

@@ -1,5 +1,5 @@
 import uuid
-from typing import Any
+from collections.abc import Sequence
 
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
@@ -7,6 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, select
 
 from app.core.constants import OrderDirection
+from app.core.event_bus import Event
+from app.core.outbox import stage_events
 from app.services.tasks.constants import TITLE_KEY_CONSTRAINT, TaskSortField
 from app.services.tasks.domain.models import Task
 from app.services.tasks.errors import DuplicateTaskError, TaskNotFoundError
@@ -28,23 +30,18 @@ class SQLModelTaskRepository(TaskRepositoryInterface):
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def add(
-        self,
-        *,
-        title: str,
-        description: str | None,
-        status: str,
-        priority: int,
-    ) -> Task:
-        task = Task.from_input(
-            title=title,
-            description=description,
-            status=status,
-            priority=priority,
-        )
+    async def persist(self, task: Task, *, events: Sequence[Event]) -> None:
+        # ``add`` stages an INSERT for a new task and is a no-op for an already-tracked one
+        # (a fetched-and-mutated row) — so one method covers create and update. The outbox
+        # rows and the row change share this single commit, giving all-or-nothing atomicity.
         self._session.add(task)
-        await self._commit_or_translate(title)
-        return task
+        stage_events(self._session, events)
+        await self._commit_or_translate(task.title)
+
+    async def remove(self, task: Task, *, events: Sequence[Event]) -> None:
+        await self._session.delete(task)
+        stage_events(self._session, events)
+        await self._session.commit()
 
     async def get(self, task_id: uuid.UUID) -> Task:
         task = await self._session.get(Task, task_id)
@@ -77,36 +74,6 @@ class SQLModelTaskRepository(TaskRepositoryInterface):
         items = list((await self._session.scalars(items_stmt)).all())
         total = int(await self._session.scalar(count_stmt) or 0)
         return items, total
-
-    async def replace(
-        self,
-        task_id: uuid.UUID,
-        *,
-        title: str,
-        description: str | None,
-        status: str,
-        priority: int,
-    ) -> tuple[Task, Task]:
-        task = await self.get(task_id)
-        previous = task.snapshot()
-        task.apply_replace(title=title, description=description, status=status, priority=priority)
-        await self._commit_or_translate(title)
-        return previous, task
-
-    async def patch(self, task_id: uuid.UUID, **fields: Any) -> tuple[Task, Task]:
-        task = await self.get(task_id)
-        previous = task.snapshot()
-        task.apply_patch(fields)
-        if task.changed_fields(previous):
-            await self._commit_or_translate(task.title)
-        return previous, task
-
-    async def delete(self, task_id: uuid.UUID) -> Task:
-        task = await self.get(task_id)
-        snapshot = task.snapshot()
-        await self._session.delete(task)
-        await self._session.commit()
-        return snapshot
 
     async def count_by_status(self) -> dict[str, int]:
         stmt = select(col(Task.status), func.count()).group_by(col(Task.status))

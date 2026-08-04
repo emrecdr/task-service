@@ -74,8 +74,8 @@ class Task(SQLModel, table=True):
     def changed_fields(self, previous: Self) -> list[str]:
         """Mutable fields whose value differs from ``previous``, in canonical order.
 
-        The single source of truth for "did this write change anything" — the
-        repository gates its commit on it and the service gates event fan-out on it.
+        The single source of truth for "did this write change anything" — the service gates
+        both the write and the event fan-out on it.
         """
         return [field for field in MUTABLE_FIELDS if getattr(self, field) != getattr(previous, field)]
 

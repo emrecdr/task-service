@@ -1,9 +1,18 @@
 from abc import ABC, abstractmethod
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from app.core.event_bus import Event
 from app.services.workflows.domain.definition import Workflow
+
+# Given the version the repo is about to assign, produce the events to stage with it. The
+# repo owns version assignment, so the service passes this closure rather than pre-built
+# events — keeping the "which event fires" decision in the service (asserted at the unit
+# layer) while the repo keeps the write and its outbox rows atomic. ``None`` ⇒ emit nothing
+# (the seed path, which is not a client-driven change and fires no ``WorkflowUpdated``).
+type WorkflowEventFactory = Callable[[int], Sequence[Event]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,7 +47,14 @@ class WorkflowRepositoryInterface(ABC):
     async def get_active(self) -> StoredWorkflow: ...
 
     @abstractmethod
-    async def replace_active(self, workflow: Workflow) -> StoredWorkflow: ...
+    async def replace_active(
+        self,
+        workflow: Workflow,
+        *,
+        make_events: WorkflowEventFactory | None = None,
+    ) -> StoredWorkflow:
+        """Store ``workflow`` as the next version and stage the events ``make_events`` returns
+        for that version, atomically in one commit (the seed passes ``None``: no events)."""
 
 
 class StatusUsagePort(ABC):

@@ -5,7 +5,7 @@ from typing import Any
 from app.core.errors import ErrorCode
 from httpx import AsyncClient
 
-from tests.conftest import CreateTask, assert_error
+from tests.conftest import CreateTask, InstallWorkflow, assert_error
 
 # Single entry, one forward path; completed is terminal and completing.
 _STRICT: dict[str, Any] = {
@@ -17,13 +17,10 @@ _STRICT: dict[str, Any] = {
 }
 
 
-async def _install_strict(client: AsyncClient) -> None:
-    r = await client.put("/v1/workflow", json=_STRICT)
-    assert r.status_code == 200, r.text
-
-
-async def test_create_defaults_to_workflow_default_entry(client: AsyncClient) -> None:
-    await _install_strict(client)
+async def test_create_defaults_to_workflow_default_entry(
+    client: AsyncClient, install_workflow: InstallWorkflow
+) -> None:
+    await install_workflow(_STRICT)
 
     r = await client.post("/v1/tasks", json={"title": "x", "priority": 3})
 
@@ -31,8 +28,8 @@ async def test_create_defaults_to_workflow_default_entry(client: AsyncClient) ->
     assert r.json()["status"] == "new"
 
 
-async def test_create_into_non_entry_state_returns_409(client: AsyncClient) -> None:
-    await _install_strict(client)
+async def test_create_into_non_entry_state_returns_409(client: AsyncClient, install_workflow: InstallWorkflow) -> None:
+    await install_workflow(_STRICT)
 
     r = await client.post("/v1/tasks", json={"title": "x", "priority": 3, "status": "completed"})
 
@@ -40,8 +37,8 @@ async def test_create_into_non_entry_state_returns_409(client: AsyncClient) -> N
     assert err["details"] == {"from": None, "to": "completed", "allowed": ["new"]}
 
 
-async def test_create_with_unknown_state_returns_422(client: AsyncClient) -> None:
-    await _install_strict(client)
+async def test_create_with_unknown_state_returns_422(client: AsyncClient, install_workflow: InstallWorkflow) -> None:
+    await install_workflow(_STRICT)
 
     r = await client.post("/v1/tasks", json={"title": "x", "priority": 3, "status": "ghost"})
 
@@ -58,8 +55,10 @@ async def test_create_explicit_null_status_still_returns_422(client: AsyncClient
     assert_error(r, 422, ErrorCode.VALIDATION_ERROR)
 
 
-async def test_patch_illegal_move_returns_409_with_allowed_list(client: AsyncClient, create_task: CreateTask) -> None:
-    await _install_strict(client)
+async def test_patch_illegal_move_returns_409_with_allowed_list(
+    client: AsyncClient, create_task: CreateTask, install_workflow: InstallWorkflow
+) -> None:
+    await install_workflow(_STRICT)
     task_id = await create_task("x")
 
     r = await client.patch(f"/v1/tasks/{task_id}", json={"status": "completed"})
@@ -70,8 +69,10 @@ async def test_patch_illegal_move_returns_409_with_allowed_list(client: AsyncCli
     assert (await client.get(f"/v1/tasks/{task_id}")).json()["status"] == "new"
 
 
-async def test_patch_legal_path_reaches_completed(client: AsyncClient, create_task: CreateTask) -> None:
-    await _install_strict(client)
+async def test_patch_legal_path_reaches_completed(
+    client: AsyncClient, create_task: CreateTask, install_workflow: InstallWorkflow
+) -> None:
+    await install_workflow(_STRICT)
     task_id = await create_task("x")
 
     assert (await client.patch(f"/v1/tasks/{task_id}", json={"status": "in_progress"})).status_code == 200
@@ -81,10 +82,12 @@ async def test_patch_legal_path_reaches_completed(client: AsyncClient, create_ta
     assert r.json()["status"] == "completed"
 
 
-async def test_put_omitting_status_on_mid_flow_task_returns_409(client: AsyncClient, create_task: CreateTask) -> None:
+async def test_put_omitting_status_on_mid_flow_task_returns_409(
+    client: AsyncClient, create_task: CreateTask, install_workflow: InstallWorkflow
+) -> None:
     """PUT resolves omitted status to default_entry; under a restrictive
     definition that back-move is a loud 409, never a silent reset."""
-    await _install_strict(client)
+    await install_workflow(_STRICT)
     task_id = await create_task("x")
     await client.patch(f"/v1/tasks/{task_id}", json={"status": "in_progress"})
 
