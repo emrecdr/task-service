@@ -290,37 +290,44 @@ async def test_purge_published_deletes_only_old_delivered_rows(session: AsyncSes
     # even though it is far older than the retention window — this is the whole safety point.
     stuck_pending = OutboxRecord.from_event(TaskCreated(task=_task("stuck").snapshot()))
     stuck_pending.occurred_at = now - timedelta(days=30)
-    session.add_all([old_delivered, recent_delivered, stuck_pending])
+    # A dead-letter is undeliverable *and* ancient, but it is the triage record — pruning it
+    # would discard the only evidence the event existed.
+    dead = OutboxRecord.from_event(TaskCreated(task=_task("dead").snapshot()))
+    dead.occurred_at = now - timedelta(days=90)
+    dead.dead_lettered_at = now - timedelta(days=89)
+    session.add_all([old_delivered, recent_delivered, stuck_pending, dead])
     await session.commit()
 
     deleted = await purge_published(session, retention_days=7)
 
     assert deleted == 1
     remaining = {r.payload["task"]["title"] for r in (await session.scalars(select(OutboxRecord))).all()}
-    assert remaining == {"recent", "stuck"}
+    assert remaining == {"recent", "stuck", "dead"}
 
 
-async def test_purge_published_never_prunes_a_dead_letter(session: AsyncSession) -> None:
-    # A dead-letter is undeliverable *and* old, but it is the triage record — pruning it would
-    # silently discard the only evidence the event ever existed.
-    dead = OutboxRecord.from_event(TaskCreated(task=_task("dead").snapshot()))
-    dead.occurred_at = datetime.now(UTC) - timedelta(days=90)
-    dead.dead_lettered_at = datetime.now(UTC) - timedelta(days=89)
-    dead.retry_count = 300
-    session.add(dead)
+async def test_purge_never_deletes_a_dead_letter_even_if_it_was_also_published(
+    session: AsyncSession,
+) -> None:
+    """Dead-letters are the triage record; the prune must exclude them on their own merit.
+
+    No current path sets both stamps — a row publishes or it dead-letters. This pins the
+    exclusion to ``dead_lettered_at`` rather than to that fact, so a future change that
+    stamps both (say, marking a poisoned row delivered to drain it) cannot silently start
+    deleting the evidence.
+    """
+    both = OutboxRecord.from_event(TaskCreated(task=_task("both").snapshot()))
+    both.published_at = datetime.now(UTC) - timedelta(days=30)
+    both.dead_lettered_at = datetime.now(UTC) - timedelta(days=30)
+    session.add(both)
     await session.commit()
 
     assert await purge_published(session, retention_days=7) == 0
     assert await _count_rows(session) == 1
 
 
-async def test_purge_published_deletes_across_batches(session: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
-    """More rows than one batch: the loop must keep going until the backlog is drained.
-
-    Bounded batches are what keep each DELETE short enough to stay under the statement
-    timeout, so "drains fully" is the property that makes the bound safe to add.
-    """
-    monkeypatch.setattr(outbox_mod, "OUTBOX_PURGE_BATCH_SIZE", 2)
+async def test_purge_stops_at_the_batch_cap_and_resumes_next_pass(session: AsyncSession) -> None:
+    """A pass is bounded so a backlog cannot stall delivery — the relay runs the prune on its
+    own task. The remainder is not lost; the next pass picks it up."""
     stale = datetime.now(UTC) - timedelta(days=30)
     for i in range(5):
         row = OutboxRecord.from_event(TaskCreated(task=_task(f"old-{i}").snapshot()))
@@ -328,7 +335,29 @@ async def test_purge_published_deletes_across_batches(session: AsyncSession, mon
         session.add(row)
     await session.commit()
 
-    deleted = await purge_published(session, retention_days=7)  # 2 + 2 + 1
+    first = await purge_published(session, retention_days=7, batch_size=2, max_batches=2)
+    assert first == 4  # capped mid-backlog
+    assert await _count_rows(session) == 1
+
+    second = await purge_published(session, retention_days=7, batch_size=2, max_batches=2)
+    assert second == 1  # the rest, on the following pass
+    assert await _count_rows(session) == 0
+
+
+async def test_purge_published_deletes_across_batches(session: AsyncSession) -> None:
+    """More rows than one batch: the loop must keep going until the backlog is drained.
+
+    Bounded batches are what keep each DELETE short enough to stay under the statement
+    timeout, so "drains fully" is the property that makes the bound safe to add.
+    """
+    stale = datetime.now(UTC) - timedelta(days=30)
+    for i in range(5):
+        row = OutboxRecord.from_event(TaskCreated(task=_task(f"old-{i}").snapshot()))
+        row.published_at = stale
+        session.add(row)
+    await session.commit()
+
+    deleted = await purge_published(session, retention_days=7, batch_size=2)  # 2 + 2 + 1
 
     assert deleted == 5
     assert await _count_rows(session) == 0

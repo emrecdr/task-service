@@ -41,7 +41,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import Field, SQLModel, col, select
 
 from app.core.config import settings
-from app.core.constants import OUTBOX_LAST_ERROR_MAX_LENGTH, OUTBOX_PURGE_BATCH_SIZE
+from app.core.constants import (
+    OUTBOX_LAST_ERROR_MAX_LENGTH,
+    OUTBOX_PURGE_BATCH_SIZE,
+    OUTBOX_PURGE_MAX_BATCHES,
+)
 from app.core.database import session_factory
 from app.core.event_bus import Event, EventBus
 from app.core.logging import logger
@@ -146,15 +150,19 @@ async def deliver_pending(
             reason = str(err)
             row.retry_count += 1
             row.last_error = reason[:OUTBOX_LAST_ERROR_MAX_LENGTH]
-            dead_lettered = row.retry_count >= max_retries
-            if dead_lettered:
-                row.dead_lettered_at = datetime.now(UTC)
             # Only the two ends of a failure are alertable: it started failing, and it died.
-            # The retries between them say nothing new, and at ``max_retries`` 300 they would
-            # be 300 lines per row (100/s at a full batch) — so they drop to debug.
-            emit = logger.error if dead_lettered else (logger.warning if row.retry_count == 1 else logger.debug)
+            # The retries between say nothing new, and at ``max_retries`` 300 they would be 300
+            # lines per row (100/s at a full batch) — so they drop to debug. Level and event
+            # name are picked together; they name one outcome, not two.
+            if row.retry_count >= max_retries:
+                row.dead_lettered_at = datetime.now(UTC)
+                emit, event_name = logger.error, "outbox_dead_lettered"
+            elif row.retry_count == 1:
+                emit, event_name = logger.warning, "outbox_delivery_failed"
+            else:
+                emit, event_name = logger.debug, "outbox_delivery_failed"
             emit(
-                "outbox_dead_lettered" if dead_lettered else "outbox_delivery_failed",
+                event_name,
                 outbox_id=str(row.id),
                 event_type=row.event_type,
                 retry_count=row.retry_count,
@@ -166,36 +174,58 @@ async def deliver_pending(
     return len(rows)
 
 
-async def purge_published(session: AsyncSession, *, retention_days: int) -> int:
+async def purge_published(
+    session: AsyncSession,
+    *,
+    retention_days: int,
+    batch_size: int = OUTBOX_PURGE_BATCH_SIZE,
+    max_batches: int = OUTBOX_PURGE_MAX_BATCHES,
+) -> int:
     """Delete delivered rows at least ``retention_days`` old; returns the count removed.
 
-    Filters on ``published_at`` (the delivered stamp), never ``occurred_at`` — an old row
-    that is still pending means delivery has been failing, exactly what must NOT be dropped.
+    Deletes only rows that carry a ``published_at`` *and* no ``dead_lettered_at``: an old row
+    that never published means delivery failed, which is exactly what must be kept — either
+    still being retried, or parked for triage.
 
     Deletes in bounded batches, each its own transaction. One unbounded DELETE over a whole
     retention window holds its locks and accumulates its WAL for as long as it runs, which on
     a large table means exceeding ``db_statement_timeout_ms`` and failing outright; short
     statements also let autovacuum reclaim the dead tuples as they are produced.
+
+    The *pass* is bounded too, at ``max_batches``. This runs on the relay's own task, so
+    nothing is delivered while it works; capping the pass keeps that pause short even against
+    a backlog. Pruning is incremental, so a pass that stops early simply leaves the remainder
+    to the next one.
     """
     cutoff = datetime.now(UTC) - timedelta(days=retention_days)
-    due = (
-        select(col(OutboxRecord.id))
-        .where(col(OutboxRecord.published_at).is_not(None), col(OutboxRecord.published_at) <= cutoff)
-        .limit(OUTBOX_PURGE_BATCH_SIZE)
+    # Bound and delete in one statement — selecting the ids first would cost a second
+    # round-trip per batch and carry every id back over the wire for no gain.
+    stmt = (
+        delete(OutboxRecord)
+        .where(
+            col(OutboxRecord.id).in_(
+                select(col(OutboxRecord.id))
+                .where(
+                    col(OutboxRecord.published_at).is_not(None),
+                    col(OutboxRecord.dead_lettered_at).is_(None),
+                    col(OutboxRecord.published_at) <= cutoff,
+                )
+                .limit(batch_size)
+            )
+        )
+        # The session holds no OutboxRecord identities here, so there is nothing to synchronise;
+        # saying so keeps SQLAlchemy from adding a RETURNING clause to find out.
+        .execution_options(synchronize_session=False)
     )
     deleted = 0
-    while True:
-        batch = list((await session.scalars(due)).all())
-        if not batch:
-            return deleted
+    for _ in range(max_batches):
         # ``execute`` is typed as ``Result``; a DELETE returns a ``CursorResult`` with ``rowcount``.
-        result = cast(
-            "CursorResult[Any]", await session.execute(delete(OutboxRecord).where(col(OutboxRecord.id).in_(batch)))
-        )
+        removed = cast("CursorResult[Any]", await session.execute(stmt)).rowcount or 0
         await session.commit()
-        deleted += result.rowcount or 0
-        if len(batch) < OUTBOX_PURGE_BATCH_SIZE:
-            return deleted
+        deleted += removed
+        if removed < batch_size:
+            break
+    return deleted
 
 
 class OutboxRelay:

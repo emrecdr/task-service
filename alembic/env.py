@@ -9,11 +9,13 @@ from sqlmodel import SQLModel
 from alembic import context
 from app.core.config import settings
 
-# Import the modules that define SQLModel ``table=True`` rows so they register on
-# ``SQLModel.metadata`` — that is what autogenerate diffs against.
-from app.core import outbox as _outbox_models  # noqa: F401
-from app.services.tasks.domain import models as _tasks_models  # noqa: F401
-from app.services.workflows.infrastructure import repository as _workflows_repo  # noqa: F401
+# Import the app itself, not a hand-listed set of model modules: autogenerate diffs against
+# whatever has registered on ``SQLModel.metadata``, so a list is only as complete as the last
+# person to remember it. A model the app loads but the list omits is invisible to *both*
+# guards — ``alembic check`` sees no drift (neither side knows the table) and the tests still
+# pass (their schema is built by ``create_all`` over the app's own metadata), so the migration
+# ships without it. Importing the app makes the two sets equal by construction.
+import app.main  # noqa: F401
 
 config = context.config
 

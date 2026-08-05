@@ -62,5 +62,10 @@ DEFAULT_OUTBOX_CLEANUP_INTERVAL_SECONDS: Final[float] = 3600.0  # hourly
 # one WAL burst, and dead tuples autovacuum can keep pace with — an unbounded delete over a
 # large retention window would instead run long enough to hit ``db_statement_timeout_ms``.
 OUTBOX_PURGE_BATCH_SIZE: Final[int] = 1000
+# Batches one prune pass may run. The prune shares the relay's task, so while it runs nothing
+# is delivered; bounding the pass keeps that pause short even against a large backlog (one built
+# up while the relay was stopped, or after the retention window was widened). Pruning is
+# incremental, so whatever is left simply goes on the next pass.
+OUTBOX_PURGE_MAX_BATCHES: Final[int] = 20
 # Truncate a stored ``last_error`` so one pathological driver message can't bloat a row.
 OUTBOX_LAST_ERROR_MAX_LENGTH: Final[int] = 1000
