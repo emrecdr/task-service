@@ -87,14 +87,13 @@ jobs:
         with:
           enable-cache: true
 
+      # Runtime deps only: alembic/env.py needs the models and settings, nothing from the dev
+      # group — syncing all groups pulls ~65 extra wheels to run four alembic commands.
       - name: Sync dependencies
-        run: uv sync --all-groups
+        run: uv sync --no-dev
 
-      - name: Apply migrations (build the schema from migrations, as prod does)
-        run: uv run alembic upgrade head
-
-      - name: Drift gate — models must match migrations
-        run: uv run alembic check
+      - name: Drift gate — apply migrations, then models must match them
+        run: make migrate-check
 
       - name: Migration round-trip (downgrade to base, then re-upgrade)
         run: |

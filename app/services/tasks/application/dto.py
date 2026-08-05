@@ -28,9 +28,8 @@ def _reject_nul(value: str) -> str:
 NulSafeStr = Annotated[str, AfterValidator(_reject_nul)]
 
 NonBlankTitle = Annotated[
-    str,
+    NulSafeStr,
     Field(min_length=TITLE_MIN_LENGTH, max_length=TITLE_MAX_LENGTH, pattern=r"\S"),
-    AfterValidator(_reject_nul),
 ]
 
 # ``| None`` on these inbound fields means "omittable", never "nullable" — the

@@ -47,6 +47,26 @@ def _state_entry(state: State) -> str | dict[str, Any]:
     return entry | dict(sorted(state.meta.items()))
 
 
+def _reject_nul_bytes(value: object, errors: list[str], path: str = "definition") -> None:
+    """Reject NUL (0x00) anywhere in the document — Postgres JSONB cannot store it.
+
+    Screened for the whole structure rather than per named field: unlike states and
+    transitions, ``meta`` is open, so its keys and values are arbitrary caller strings at
+    arbitrary depth. Without this the write reaches the driver and fails as an unhandled
+    ``DBAPIError`` (a 500) instead of the 422 every other bad document gets.
+    """
+    if isinstance(value, str):
+        if "\x00" in value:
+            errors.append(f"{path}: strings may not contain NUL (0x00) characters")
+    elif isinstance(value, dict):
+        for key, item in cast("dict[str, Any]", value).items():
+            _reject_nul_bytes(key, errors, f"{path}.{key}")
+            _reject_nul_bytes(item, errors, f"{path}.{key}")
+    elif isinstance(value, list):
+        for index, item in enumerate(cast("list[Any]", value)):
+            _reject_nul_bytes(item, errors, f"{path}[{index}]")
+
+
 def workflow_from_document(data: object) -> Workflow:
     """Parse and validate a definition document, collecting ALL problems at once.
 
@@ -56,6 +76,7 @@ def workflow_from_document(data: object) -> Workflow:
     """
     document = _parse_document(data)
     errors: list[str] = []
+    _reject_nul_bytes(document, errors)
     states = _parse_states(document["states"], errors)
     transitions = _parse_transitions(document["transitions"], {s.name for s in states}, errors)
     if errors:

@@ -48,8 +48,8 @@ test-integration: ## 🧪 Integration tests — in-process FastAPI + Postgres (t
 migrate: ## 🗄️  Apply Alembic migrations (alembic upgrade head)
 	uv run alembic upgrade head
 
-migrate-check: ## 🗄️  Drift gate: upgrade head + `alembic check` (models must match migrations). Needs a reachable DB.
-	uv run alembic upgrade head && uv run alembic check
+migrate-check: migrate ## 🗄️  Drift gate: upgrade head + `alembic check` (models must match migrations). Needs a reachable DB.
+	uv run alembic check
 
 db-revision: ## 🗄️  Autogenerate a migration from model changes: make db-revision m="message"
 	uv run alembic revision --autogenerate -m "$(m)"

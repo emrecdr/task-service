@@ -1,10 +1,12 @@
 from app.core.errors import ErrorCode
 from httpx import AsyncClient
 
-from tests.conftest import CreateTask, assert_error
+from tests.conftest import CreateTask, InstallWorkflow, assert_error
 
 
-async def test_transitions_lists_legal_moves_for_seeded_workflow(client: AsyncClient, create_task: CreateTask) -> None:
+async def test_transitions_lists_legal_moves_for_seeded_workflow(
+    client: AsyncClient, create_task: CreateTask, install_workflow: InstallWorkflow
+) -> None:
     task_id = await create_task("x")
 
     r = await client.get(f"/v1/tasks/{task_id}/transitions")
@@ -20,7 +22,9 @@ async def test_transitions_lists_legal_moves_for_seeded_workflow(client: AsyncCl
     }
 
 
-async def test_transitions_passes_definition_meta_through(client: AsyncClient, create_task: CreateTask) -> None:
+async def test_transitions_passes_definition_meta_through(
+    client: AsyncClient, create_task: CreateTask, install_workflow: InstallWorkflow
+) -> None:
     document = {
         "states": [{"name": "new", "initial": True}, "in_progress", {"name": "completed", "completes": True}],
         "transitions": [
@@ -29,8 +33,7 @@ async def test_transitions_passes_definition_meta_through(client: AsyncClient, c
             {"name": "Send back", "from": "in_progress", "to": "new"},
         ],
     }
-    put = await client.put("/v1/workflow", json=document)
-    assert put.status_code == 200, put.text
+    await install_workflow(document)
     task_id = await create_task("x")
 
     r = await client.get(f"/v1/tasks/{task_id}/transitions")

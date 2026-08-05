@@ -139,3 +139,25 @@ class TestGuardMetaValidation:
         }
         resp = await client.put("/v1/workflow", json=document)
         assert_error(resp, 422, ErrorCode.INVALID_WORKFLOW_DEFINITION)
+
+
+class TestDocumentSanitising:
+    """``PUT /v1/workflow`` accepts a free-form document, so its strings are screened here
+    rather than by a typed field — including ``meta``, whose keys and values are open."""
+
+    async def test_nul_in_a_state_name_is_422(self, client: AsyncClient) -> None:
+        document = {
+            "states": [{"name": "new\x00", "initial": True}, "done"],
+            "transitions": [{"name": "Go", "from": "new\x00", "to": "done"}],
+        }
+        resp = await client.put("/v1/workflow", json=document)
+        assert_error(resp, 422, ErrorCode.INVALID_WORKFLOW_DEFINITION)
+
+    async def test_nul_in_an_open_meta_value_is_422(self, client: AsyncClient) -> None:
+        # ``meta`` is uninterpreted pass-through, so nothing else would ever inspect it.
+        document = {
+            "states": [{"name": "new", "initial": True}, "done"],
+            "transitions": [{"name": "Go", "from": "new", "to": "done", "color": "#fff\x00"}],
+        }
+        resp = await client.put("/v1/workflow", json=document)
+        assert_error(resp, 422, ErrorCode.INVALID_WORKFLOW_DEFINITION)
