@@ -17,7 +17,6 @@ dependencies = [
     "pydantic>=2.13",
     "pydantic-settings>=2.1",
     "structlog>=25.0",
-    "python-dotenv>=1.2.2",
     "prometheus-fastapi-instrumentator>=7.0",
 ]
 

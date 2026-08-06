@@ -1,7 +1,7 @@
 .PHONY: help all install \
         clean clean-all port-check-kill \
         lint typecheck test test-unit test-integration test-contract \
-        hurl-e2e schemathesis migrate migrate-check db-revision \
+        hurl-e2e schemathesis migrate migrate-check db-revision db-up db-down \
         run \
         docker-build compose-up compose-down compose-logs
 
@@ -10,13 +10,20 @@ APP_PORT ?= 8000
 export APP_PORT
 DOCKER_IMAGE := internal-task-service:dev
 DOCKER_COMPOSE := docker compose -f docker/docker-compose.yaml
+DEV_DB_CONTAINER := task-service-devdb
+# 5432 is what the default DATABASE_URL expects; override both together if it is taken.
+DEV_DB_PORT ?= 5432
 
 .DEFAULT_GOAL := help
 
 help: ## ✨ Show this help message
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-22s\033[0m %s\n", $$1, $$2}'
 
-all: lint typecheck test ## ✨ One-shot pre-push: static gates + full pytest suite
+# Stops exactly where infrastructure starts: ``migrate-check``/``hurl-e2e``/``docker-build`` need
+# Docker + Postgres, so including them would make a laptop with Docker off fail the gate. ``pip-audit``
+# is CI-only on purpose — its verdict tracks the CVE feed, not the diff, so it belongs somewhere a new
+# advisory *should* stop a deploy, not somewhere it blocks an unrelated push.
+all: lint typecheck test schemathesis ## ✨ One-shot pre-push: every CI gate that needs no Docker/Postgres
 
 install: ## 📦 Sync dependencies and wire pre-commit hooks
 	uv sync --all-groups
@@ -24,10 +31,11 @@ install: ## 📦 Sync dependencies and wire pre-commit hooks
 
 # --- Code quality ----------------------------------------------------------
 
-lint: ## 🧹 Ruff check + format + Bandit security scan
+lint: ## 🧹 Ruff check + format + Bandit security scan + uv.lock freshness
 	uv run ruff check app tests
 	uv run ruff format --check app tests
 	uv run bandit -c pyproject.toml -r app -q
+	uv lock --check
 
 typecheck: ## 🔍 pyright strict on app + tests
 	uv run pyright
@@ -43,6 +51,9 @@ test-unit: ## 🧪 Unit tests only — feature-local, no FastAPI/DB
 test-integration: ## 🧪 Integration tests — in-process FastAPI + Postgres (testcontainers)
 	uv run pytest tests/integration --no-cov
 
+test-contract: ## 🧪 Contract tests — repository ABC conformance
+	uv run pytest tests/contract --no-cov
+
 # --- Database migrations ---------------------------------------------------
 
 migrate: ## 🗄️  Apply Alembic migrations (alembic upgrade head)
@@ -54,8 +65,40 @@ migrate-check: migrate ## 🗄️  Drift gate: upgrade head + `alembic check` (m
 db-revision: ## 🗄️  Autogenerate a migration from model changes: make db-revision m="message"
 	uv run alembic revision --autogenerate -m "$(m)"
 
-test-contract: ## 🧪 Contract tests — repository ABC conformance
-	uv run pytest tests/contract --no-cov
+# The compose Postgres publishes no ports (internal-only, for the container stack), so it cannot
+# back ``make run``. This is the host-reachable one the default DATABASE_URL expects, matching the
+# snippet README documents — started idempotently, then migrated, because an empty schema is no
+# more useful to ``make run`` than no database.
+db-up: ## 🗄️  Start a host-reachable dev Postgres on :$(DEV_DB_PORT) (idempotent) and apply migrations
+	@if [ -z "$$(docker ps -q -f name=^/$(DEV_DB_CONTAINER)$$)" ] && \
+	    [ -n "$$(lsof -t -i TCP:$(DEV_DB_PORT) -sTCP:LISTEN 2>/dev/null)" ]; then \
+	  echo "✗ port $(DEV_DB_PORT) is already in use — the default DATABASE_URL points there."; \
+	  echo "  Free it, or point DATABASE_URL at the instance already running:"; \
+	  docker ps --format '    {{.Names}} ({{.Image}}) {{.Ports}}' | grep $(DEV_DB_PORT) || true; \
+	  exit 1; \
+	fi
+	@# A previous failed run can leave a container in ``Created``; ``start`` would then take the
+	@# idempotent branch on a container that never worked. Remove any non-running one first.
+	@if [ -n "$$(docker ps -aq -f name=^/$(DEV_DB_CONTAINER)$$)" ] && \
+	    [ -z "$$(docker ps -q -f name=^/$(DEV_DB_CONTAINER)$$)" ]; then \
+	  docker rm -f $(DEV_DB_CONTAINER) >/dev/null 2>&1 || true; \
+	fi
+	@docker ps -q -f name=^/$(DEV_DB_CONTAINER)$$ | grep -q . || \
+	  docker run -d --name $(DEV_DB_CONTAINER) -p $(DEV_DB_PORT):5432 \
+	    -e POSTGRES_USER=taskservice -e POSTGRES_PASSWORD=taskservice -e POSTGRES_DB=taskservice \
+	    postgres:17 >/dev/null
+	@for i in $$(seq 1 30); do \
+	   docker exec $(DEV_DB_CONTAINER) pg_isready -U taskservice -d taskservice >/dev/null 2>&1 && break; \
+	   sleep 1; \
+	 done; \
+	 docker exec $(DEV_DB_CONTAINER) pg_isready -U taskservice -d taskservice >/dev/null 2>&1 || \
+	   { echo "✗ postgres did not become ready — check: docker logs $(DEV_DB_CONTAINER)"; exit 1; }
+	@echo "✓ postgres ready on localhost:$(DEV_DB_PORT)"
+	$(MAKE) migrate
+
+db-down: ## 🛑 Remove the dev Postgres container (storage is anonymous — its data is dropped)
+	@docker rm -f $(DEV_DB_CONTAINER) >/dev/null 2>&1 || true
+	@echo "✓ dev postgres removed"
 
 # --- E2E (against running container) ---------------------------------------
 
@@ -66,7 +109,7 @@ test-contract: ## 🧪 Contract tests — repository ABC conformance
 # each run starts from a fresh, freshly-migrated database.
 hurl-e2e: ## 🌐 Run Hurl E2E suite against the docker-compose stack (fresh DB per run)
 	@trap '$(DOCKER_COMPOSE) down -v' EXIT; \
-	$(DOCKER_COMPOSE) up -d --wait task-service && \
+	$(DOCKER_COMPOSE) up -d --build --wait task-service && \
 	hurl --test --jobs 1 \
 	     --variable base_url=http://localhost:$(APP_PORT) \
 	     --report-html reports/hurl/ \

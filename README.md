@@ -205,20 +205,18 @@ For `uvicorn --reload`, provide a Postgres yourself, apply the schema, then run 
 the app no longer creates tables (Alembic owns the schema):
 
 ```bash
-make migrate        # alembic upgrade head — create/upgrade the schema
+make db-up          # start a host-reachable Postgres on :5432 (idempotent) + apply migrations
 make run            # uvicorn --reload on :8000 (override with APP_PORT=9000 make run)
+make db-down        # remove it again (storage is anonymous — its data is dropped)
 ```
 
 The default `DATABASE_URL` (in `.env`) expects Postgres on `localhost:5432` with
-`taskservice/taskservice/taskservice`. Start one any way you like — for example:
-
-```bash
-docker run --rm -p 5432:5432 -e POSTGRES_USER=taskservice \
-  -e POSTGRES_PASSWORD=taskservice -e POSTGRES_DB=taskservice postgres:17
-```
-
-— or point `DATABASE_URL` at an instance you already run. (The compose Postgres is
-internal-only and not reachable from the host, so it can't back `make run`.)
+`taskservice/taskservice/taskservice`, which is exactly what `make db-up` starts. If you already
+run Postgres on that port, `db-up` says so and stops rather than fighting it — point
+`DATABASE_URL` at your instance instead, or override both together
+(`make db-up DEV_DB_PORT=5433` with a matching `DATABASE_URL`). Against a database you manage
+yourself, `make migrate` applies the schema on its own. (The compose Postgres publishes no ports —
+it is internal to the container stack and cannot back `make run`.)
 
 ## Tests
 
@@ -235,7 +233,7 @@ Tests live at four layers, each chosen to give a _different_ kind of confidence:
 The split rule for unit vs. integration: _can this test run with only my feature module imported?_ Yes → unit test, lives in `app/services/<feature>/tests/`. No (needs the full FastAPI app, real HTTP, or another feature) → cross-boundary, lives in `tests/`.
 
 ```bash
-make all                # lint + typecheck + full pytest suite (243 tests, 97% coverage; gate at 80%)
+make all                # lint + typecheck + full pytest + schemathesis (334 tests, 97% coverage; gate at 80%)
 make test               # full pytest with coverage gate
 make test-unit          # feature-local unit tests only — fast, no FastAPI/DB
 make test-integration   # in-process FastAPI + Postgres (testcontainers)

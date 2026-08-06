@@ -5,6 +5,20 @@ on:
     branches: [main]
   pull_request:
 
+# Least privilege for GITHUB_TOKEN. Nothing here writes to the repository, comments on a
+# pull request, or publishes a package — the jobs check out, test, scan, and upload an
+# artifact. Declaring it at the workflow level means a job added later cannot silently
+# inherit whatever the repository default happens to be.
+permissions:
+  contents: read
+
+# One in-flight run per ref. Without this, every push to an open PR starts a full duplicate
+# run — including two production image builds and two Trivy scans, the most expensive things
+# in this workflow. Cancelling is safe because CI only tests here; it deploys nothing.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   # Pin Hurl explicitly — release assets are version-named
   # (``hurl_<version>_amd64.deb``); the bare ``hurl_amd64.deb`` URL 404s.
