@@ -38,6 +38,16 @@ class SQLModelTaskRepository(TaskRepositoryInterface):
         stage_events(self._session, events)
         await self._commit_or_translate(task.title)
 
+    async def stage(self, task: Task) -> None:
+        self._session.add(task)
+        try:
+            await self._session.flush()
+        except IntegrityError as err:
+            await self._session.rollback()
+            if _is_title_key_violation(err):
+                raise DuplicateTaskError(details={"title": task.title}, original_error=err) from err
+            raise
+
     async def remove(self, task: Task, *, events: Sequence[Event]) -> None:
         await self._session.delete(task)
         stage_events(self._session, events)
@@ -53,6 +63,7 @@ class SQLModelTaskRepository(TaskRepositoryInterface):
         self,
         *,
         statuses: list[str] | None,
+        task_ids: set[uuid.UUID] | None,
         order_by: TaskSortField,
         order_dir: OrderDirection,
         limit: int,
@@ -63,6 +74,12 @@ class SQLModelTaskRepository(TaskRepositoryInterface):
         if statuses:
             base = base.where(col(Task.status).in_(statuses))
             count_stmt = count_stmt.where(col(Task.status).in_(statuses))
+        if task_ids is not None:
+            # The tag filter, already resolved to task IDs by the service. ``None`` means no
+            # tag filter was asked for; an empty set means one was and nothing matched, so it
+            # must still constrain the query rather than being treated as absent.
+            base = base.where(col(Task.id).in_(task_ids))
+            count_stmt = count_stmt.where(col(Task.id).in_(task_ids))
 
         # ``order_by`` is a StrEnum whose value IS the column attribute name.
         sort_col = col(getattr(Task, order_by))

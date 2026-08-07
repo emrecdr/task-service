@@ -22,6 +22,7 @@ async def test_list_orders_by_priority_then_created_at(session: AsyncSession) ->
 
     items_desc, total = await repo.list(
         statuses=None,
+        task_ids=None,
         order_by=TaskSortField.PRIORITY,
         order_dir=OrderDirection.DESC,
         limit=10,
@@ -32,6 +33,7 @@ async def test_list_orders_by_priority_then_created_at(session: AsyncSession) ->
 
     items_asc, _ = await repo.list(
         statuses=None,
+        task_ids=None,
         order_by=TaskSortField.PRIORITY,
         order_dir=OrderDirection.ASC,
         limit=10,

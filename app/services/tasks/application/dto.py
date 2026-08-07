@@ -5,6 +5,7 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validat
 
 from app.core.constants import DEFAULT_LIST_LIMIT, INT64_MAX, MAX_LIST_LIMIT, OrderDirection
 from app.core.datetime_utils import IsoUtcDatetime
+from app.services.tags.constants import MAX_TAGS_PER_TASK, NAME_MAX_LENGTH, NAME_MIN_LENGTH, TagMatchOp
 from app.services.tasks.constants import (
     DESCRIPTION_MAX_LENGTH,
     PRIORITY_MAX,
@@ -45,6 +46,9 @@ def _reject_explicit_nulls(model: BaseModel, fields: tuple[str, ...]) -> None:
             raise ValueError(f"{field} must not be null")
 
 
+TagName = Annotated[NulSafeStr, Field(min_length=NAME_MIN_LENGTH, max_length=NAME_MAX_LENGTH)]
+
+
 class TaskCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -53,6 +57,9 @@ class TaskCreate(BaseModel):
     # None = "use the active workflow's default entry state"; validated by the service.
     status: NulSafeStr | None = None
     priority: int = Field(ge=PRIORITY_MIN, le=PRIORITY_MAX)
+    tags: list[TagName] | None = Field(
+        default=None, max_length=MAX_TAGS_PER_TASK, description="Tag names; unknown names are created."
+    )
 
     @model_validator(mode="after")
     def _reject_explicit_null(self) -> Self:
@@ -70,6 +77,9 @@ class TaskPatch(BaseModel):
     description: NulSafeStr | None = Field(default=None, max_length=DESCRIPTION_MAX_LENGTH)
     status: NulSafeStr | None = None
     priority: int | None = Field(default=None, ge=PRIORITY_MIN, le=PRIORITY_MAX)
+    tags: list[TagName] | None = Field(
+        default=None, max_length=MAX_TAGS_PER_TASK, description="Tag names; unknown names are created."
+    )
 
     @model_validator(mode="after")
     def _reject_explicit_null(self) -> Self:
@@ -86,6 +96,8 @@ class TaskResponse(BaseModel):
     status: str
     priority: int
     created_at: IsoUtcDatetime
+    # Not a Task column: the router fills this from TagRepository.names_for_tasks.
+    tags: list[str] = Field(default_factory=list)
 
 
 class TaskListResponse(BaseModel):
@@ -118,6 +130,17 @@ class TaskListParams(BaseModel):
         default=None,
         alias="status",
         description="Filter by status. Repeat the param for multiple values.",
+    )
+    tags: list[NulSafeStr] | None = Field(
+        default=None,
+        alias="tag",
+        description="Filter by tag name. Repeat the param for multiple values; see ``op``.",
+    )
+    op: TagMatchOp = Field(
+        default=TagMatchOp.AND,
+        description="How repeated ``tag`` values combine: ``and`` (carry every tag) or ``or`` "
+        "(carry any). Applies to ``tag`` only — a task holds one status, so an AND across "
+        "statuses could never match.",
     )
     order_by: TaskSortField = Field(
         default=TaskSortField.PRIORITY,

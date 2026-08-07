@@ -3,6 +3,7 @@ from typing import Annotated
 from fastapi import Depends, Header, Query
 
 from app.core.dependencies import SessionDep
+from app.services.tags.infrastructure.repository import SQLModelTagRepository
 from app.services.tasks.application.dto import TaskListParams
 from app.services.tasks.application.service import TaskService
 from app.services.tasks.infrastructure.repository import SQLModelTaskRepository
@@ -10,11 +11,13 @@ from app.services.workflows.infrastructure.repository import SQLModelWorkflowRep
 
 
 def get_task_service(session: SessionDep) -> TaskService:
-    # Both repositories share the request's single session — the atomicity of the
-    # read-workflow → check-move → write span (and the outbox write) depends on it.
+    # All three repositories share the request's single session — the atomicity of the
+    # read-workflow → check-move → write span (and the outbox write) depends on it, and so do
+    # the staged tag rows, which must land in the same transaction as the task they belong to.
     return TaskService(
         repo=SQLModelTaskRepository(session),
         workflows=SQLModelWorkflowRepository(session),
+        tags=SQLModelTagRepository(session),
     )
 
 

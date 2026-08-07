@@ -28,6 +28,8 @@ class ErrorCode(StrEnum):
     WIP_LIMIT_EXCEEDED = "wip_limit_exceeded"
     INVALID_WORKFLOW_DEFINITION = "invalid_workflow_definition"
     WORKFLOW_STATES_IN_USE = "workflow_states_in_use"
+    TAG_NOT_FOUND = "tag_not_found"
+    TAG_IN_USE = "tag_in_use"
     PAYLOAD_TOO_LARGE = "payload_too_large"
     REQUEST_TIMEOUT = "request_timeout"
     SERVICE_UNAVAILABLE = "service_unavailable"

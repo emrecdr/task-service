@@ -26,7 +26,10 @@ from testcontainers.community.postgres import PostgresContainer
 type CreateTask = Callable[..., Awaitable[str]]
 type InstallWorkflow = Callable[[dict[str, Any]], Awaitable[None]]
 
-_TRUNCATE = text("TRUNCATE tasks, workflow_definitions, outbox RESTART IDENTITY CASCADE")
+# ``tags`` is listed explicitly: CASCADE reaches ``task_tags`` through its FK to ``tasks``, but
+# the vocabulary itself has no FK to anything, so it would otherwise survive between tests and
+# make tag assertions depend on execution order.
+_TRUNCATE = text("TRUNCATE tasks, tags, workflow_definitions, outbox RESTART IDENTITY CASCADE")
 
 
 @pytest.fixture(scope="session", autouse=True)

@@ -137,6 +137,22 @@ CONFLICT_RESPONSE: Final[dict[str, Any]] = _envelope_response(
 )
 
 
+# ---- 409 (tag delete) ----
+
+TAG_CONFLICT_RESPONSE: Final[dict[str, Any]] = _envelope_response(
+    examples={
+        "tag_in_use": {
+            "summary": "Tasks still carry this tag",
+            "value": _envelope_example(
+                code=ErrorCode.TAG_IN_USE,
+                message="Tag is still applied to one or more tasks.",
+                details={"id": "0199a5f2-9c1e-7c2a-8f3b-1d2e3f4a5b6c", "name": "urgent", "task_count": 4},
+            ),
+        },
+    },
+)
+
+
 # ---- 422 variants, each listing only the codes reachable on its routes ----
 
 # Path / query validation only: GET one, GET list, DELETE, GET transitions.

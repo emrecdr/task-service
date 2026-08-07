@@ -119,6 +119,7 @@ async def test_list_filters_by_status_and_sorts_desc(repo: TaskRepositoryInterfa
     await _insert(repo, title="c", status="completed", priority=3)
     items, total = await repo.list(
         statuses=["new"],
+        task_ids=None,
         order_by=TaskSortField.PRIORITY,
         order_dir=OrderDirection.DESC,
         limit=10,
@@ -133,6 +134,7 @@ async def test_list_sort_asc_reverses_order(repo: TaskRepositoryInterface) -> No
     await _insert(repo, title="b", status="new", priority=5)
     items, _ = await repo.list(
         statuses=None,
+        task_ids=None,
         order_by=TaskSortField.PRIORITY,
         order_dir=OrderDirection.ASC,
         limit=10,
@@ -146,6 +148,7 @@ async def test_list_pagination_limit_and_offset(repo: TaskRepositoryInterface) -
         await _insert(repo, title=title, status="new", priority=i)
     page, total = await repo.list(
         statuses=None,
+        task_ids=None,
         order_by=TaskSortField.PRIORITY,
         order_dir=OrderDirection.ASC,
         limit=2,

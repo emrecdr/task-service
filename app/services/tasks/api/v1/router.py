@@ -25,6 +25,28 @@ TaskIdPath = Annotated[uuid.UUID, Path()]
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
+
+# ``tags`` is not a Task column — it lives in the tags feature's join — so responses are built
+# explicitly instead of being coerced straight off the ORM row. The list path takes one batch
+# query for the whole page; a per-row lookup is exactly what would make that endpoint N+1.
+
+
+async def _one(service: TaskServiceDep, task: Task) -> TaskResponse:
+    response = TaskResponse.model_validate(task)
+    response.tags = (await service.tags_for([task.id])).get(task.id, [])
+    return response
+
+
+async def _many(service: TaskServiceDep, tasks: list[Task]) -> list[TaskResponse]:
+    by_task = await service.tags_for([task.id for task in tasks])
+    responses: list[TaskResponse] = []
+    for task in tasks:
+        response = TaskResponse.model_validate(task)
+        response.tags = by_task.get(task.id, [])
+        responses.append(response)
+    return responses
+
+
 # ======================================================= #
 # ----- Task Create Route ----- #
 
@@ -42,8 +64,8 @@ router = APIRouter(prefix="/tasks", tags=["tasks"])
 async def create_task(
     body: TaskCreate,
     service: TaskServiceDep,
-) -> Task:
-    return await service.create(**body.model_dump())
+) -> TaskResponse:
+    return await _one(service, await service.create(**body.model_dump()))
 
 
 # ======================================================= #
@@ -62,7 +84,7 @@ async def list_tasks(
     items, total = await service.list(params=query_params)
     return TaskListResponse.model_validate(
         {
-            "items": items,
+            "items": await _many(service, items),
             "total": total,
             "limit": query_params.limit,
             "offset": query_params.offset,
@@ -85,8 +107,8 @@ async def list_tasks(
 async def get_task(
     task_id: TaskIdPath,
     service: TaskServiceDep,
-) -> Task:
-    return await service.get(task_id)
+) -> TaskResponse:
+    return await _one(service, await service.get(task_id))
 
 
 # ======================================================= #
@@ -134,8 +156,8 @@ async def replace_task(
     body: TaskCreate,
     service: TaskServiceDep,
     roles: ActorRolesDep,
-) -> Task:
-    return await service.replace(task_id, **body.model_dump(), roles=roles)
+) -> TaskResponse:
+    return await _one(service, await service.replace(task_id, **body.model_dump(), roles=roles))
 
 
 # ======================================================= #
@@ -157,12 +179,13 @@ async def patch_task(
     body: TaskPatch,
     service: TaskServiceDep,
     roles: ActorRolesDep,
-) -> Task:
-    return await service.patch(
+) -> TaskResponse:
+    task = await service.patch(
         task_id,
         fields=body.model_dump(exclude_unset=True),
         roles=roles,
     )
+    return await _one(service, task)
 
 
 # ======================================================= #

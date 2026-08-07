@@ -13,6 +13,7 @@ from app.core.config import settings
 from app.core.event_bus import Event, EventBus
 from app.core.outbox import OutboxRecord, OutboxRelay, deliver_pending, purge_published, stage_events
 from app.main import EVENT_REGISTRY
+from app.services.tags.domain.events import TAG_EVENT_TYPES
 from app.services.tasks.domain.events import TASK_EVENT_TYPES, TaskCreated
 from app.services.tasks.domain.models import Task
 from app.services.workflows.domain.events import WORKFLOW_EVENT_TYPES, WorkflowUpdated
@@ -21,7 +22,7 @@ from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, select
 
-_ALL_EVENT_TYPES = (*TASK_EVENT_TYPES, *WORKFLOW_EVENT_TYPES)
+_ALL_EVENT_TYPES = (*TASK_EVENT_TYPES, *TAG_EVENT_TYPES, *WORKFLOW_EVENT_TYPES)
 
 
 def _task(title: str = "alpha") -> Task:

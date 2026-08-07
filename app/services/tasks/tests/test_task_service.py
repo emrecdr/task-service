@@ -19,6 +19,10 @@ from app.core.errors import (
     WipLimitExceededError,
 )
 from app.core.event_bus import Event
+from app.services.tags.domain.events import TaskTagsChanged
+from app.services.tags.domain.models import Tag
+from app.services.tags.errors import TagNotFoundError
+from app.services.tags.interfaces import TagRepositoryInterface
 from app.services.tasks.application.service import TaskService
 from app.services.tasks.constants import TaskSortField
 from app.services.tasks.domain.events import (
@@ -103,6 +107,9 @@ class FakeRepo(TaskRepositoryInterface):
         self._rows[task.id] = task
         self.events.extend(events)
 
+    async def stage(self, task: Task) -> None:
+        self._rows[task.id] = task
+
     async def get(self, task_id: uuid.UUID) -> Task:
         try:
             return self._rows[task_id]
@@ -113,12 +120,13 @@ class FakeRepo(TaskRepositoryInterface):
         self,
         *,
         statuses: list[str] | None,
+        task_ids: set[uuid.UUID] | None,
         order_by: TaskSortField,
         order_dir: OrderDirection,
         limit: int,
         offset: int,
     ) -> tuple[list[Task], int]:
-        rows = list(self._rows.values())
+        rows = [t for t in self._rows.values() if task_ids is None or t.id in task_ids]
         return rows[offset : offset + limit], len(rows)
 
     async def remove(self, task: Task, *, events: Sequence[Event]) -> None:
@@ -133,6 +141,54 @@ class FakeRepo(TaskRepositoryInterface):
         return counts
 
 
+class FakeTagRepo(TagRepositoryInterface):
+    """In-memory tag vocabulary + join, recording what the service asked for."""
+
+    def __init__(self) -> None:
+        self.by_key: dict[str, uuid.UUID] = {}
+        self.display: dict[uuid.UUID, str] = {}
+        self.links: dict[uuid.UUID, list[uuid.UUID]] = {}
+
+    async def resolve(self, names: Sequence[str]) -> dict[str, uuid.UUID]:
+        resolved: dict[str, uuid.UUID] = {}
+        for name in names:
+            stripped, key = Tag.clean_name(name)
+            if key not in self.by_key:
+                self.by_key[key] = uuid.uuid7()
+                self.display[self.by_key[key]] = stripped
+            resolved[key] = self.by_key[key]
+        return resolved
+
+    async def set_for_task(self, task_id: uuid.UUID, tag_ids: Sequence[uuid.UUID]) -> None:
+        self.links[task_id] = list(dict.fromkeys(tag_ids))
+
+    async def names_for_tasks(self, task_ids: Sequence[uuid.UUID]) -> dict[uuid.UUID, list[str]]:
+        return {
+            tid: sorted(self.display[t] for t in self.links.get(tid, [])) for tid in task_ids if self.links.get(tid)
+        }
+
+    async def task_ids_matching(self, name_keys: Sequence[str], *, match_all: bool) -> set[uuid.UUID]:
+        wanted = {self.by_key[k] for k in name_keys if k in self.by_key}
+        if not wanted:
+            return set()
+        held = self.links.items()
+        if match_all:
+            return {tid for tid, ids in held if wanted <= set(ids)}
+        return {tid for tid, ids in held if wanted & set(ids)}
+
+    async def list_with_counts(self) -> list[tuple[Tag, int]]:
+        return []
+
+    async def get(self, tag_id: uuid.UUID) -> Tag:
+        raise TagNotFoundError(details={"id": str(tag_id)})
+
+    async def task_count(self, tag_id: uuid.UUID) -> int:
+        return sum(1 for ids in self.links.values() if tag_id in ids)
+
+    async def remove(self, tag: Tag, *, events: Sequence[Event]) -> None:
+        raise NotImplementedError
+
+
 @pytest.fixture
 def repo() -> FakeRepo:
     return FakeRepo()
@@ -140,12 +196,12 @@ def repo() -> FakeRepo:
 
 @pytest.fixture
 def service(repo: FakeRepo) -> TaskService:
-    return TaskService(repo=repo, workflows=FakeWorkflowRepo(_any_to_any()))
+    return TaskService(repo=repo, tags=FakeTagRepo(), workflows=FakeWorkflowRepo(_any_to_any()))
 
 
 @pytest.fixture
 def strict_service(repo: FakeRepo) -> TaskService:
-    return TaskService(repo=repo, workflows=FakeWorkflowRepo(_strict()))
+    return TaskService(repo=repo, tags=FakeTagRepo(), workflows=FakeWorkflowRepo(_strict()))
 
 
 class TestCreate:
@@ -278,7 +334,7 @@ class TestPatch:
         # "done" carries no completes meta — TaskCompleted must stay silent.
         workflow = Workflow(states=[State("open", initial=True), State("done")])
         workflow.allow_transition("Close", from_state="open", to_state="done")
-        service = TaskService(repo=repo, workflows=FakeWorkflowRepo(workflow))
+        service = TaskService(repo=repo, tags=FakeTagRepo(), workflows=FakeWorkflowRepo(workflow))
         task = await service.create(title="a", description=None, status=None, priority=1)
         repo.events.clear()
 
@@ -438,7 +494,7 @@ def _wip_limited_entry() -> Workflow:
 
 class TestRoleGuards:
     async def test_transition_forbidden_without_the_required_role(self, repo: FakeRepo) -> None:
-        service = TaskService(repo=repo, workflows=FakeWorkflowRepo(_role_guarded()))
+        service = TaskService(repo=repo, tags=FakeTagRepo(), workflows=FakeWorkflowRepo(_role_guarded()))
         task = await service.create(title="a", description=None, status="new", priority=1)
         repo.events.clear()
         with pytest.raises(TransitionForbiddenError) as exc:
@@ -447,7 +503,7 @@ class TestRoleGuards:
         assert repo.events == []  # a forbidden move stages nothing
 
     async def test_transition_allowed_with_the_required_role(self, repo: FakeRepo) -> None:
-        service = TaskService(repo=repo, workflows=FakeWorkflowRepo(_role_guarded()))
+        service = TaskService(repo=repo, tags=FakeTagRepo(), workflows=FakeWorkflowRepo(_role_guarded()))
         task = await service.create(title="a", description=None, status="new", priority=1)
         repo.events.clear()
         await service.patch(task.id, fields={"status": "done"}, roles=frozenset({"manager"}))
@@ -456,7 +512,7 @@ class TestRoleGuards:
     async def test_replace_is_guarded_by_the_same_roles(self, repo: FakeRepo) -> None:
         # ``replace`` carries its own ``roles`` seam; a guard enforced only on ``patch`` would
         # leave the whole PUT path unauthorized.
-        service = TaskService(repo=repo, workflows=FakeWorkflowRepo(_role_guarded()))
+        service = TaskService(repo=repo, tags=FakeTagRepo(), workflows=FakeWorkflowRepo(_role_guarded()))
         task = await service.create(title="a", description=None, status="new", priority=1)
         repo.events.clear()
         with pytest.raises(TransitionForbiddenError) as exc:
@@ -465,7 +521,7 @@ class TestRoleGuards:
         assert repo.events == []
 
     async def test_replace_allowed_with_the_required_role(self, repo: FakeRepo) -> None:
-        service = TaskService(repo=repo, workflows=FakeWorkflowRepo(_role_guarded()))
+        service = TaskService(repo=repo, tags=FakeTagRepo(), workflows=FakeWorkflowRepo(_role_guarded()))
         task = await service.create(title="a", description=None, status="new", priority=1)
         repo.events.clear()
         replaced = await service.replace(
@@ -477,7 +533,7 @@ class TestRoleGuards:
 
 class TestWipLimits:
     async def test_entry_blocked_when_target_state_is_full(self, repo: FakeRepo) -> None:
-        service = TaskService(repo=repo, workflows=FakeWorkflowRepo(_wip_limited()))
+        service = TaskService(repo=repo, tags=FakeTagRepo(), workflows=FakeWorkflowRepo(_wip_limited()))
         first = await service.create(title="a", description=None, status="new", priority=1)
         await service.patch(first.id, fields={"status": "active"})  # fills "active" (limit 1)
         second = await service.create(title="b", description=None, status="new", priority=1)
@@ -488,7 +544,7 @@ class TestWipLimits:
         assert repo.events == []
 
     async def test_entry_allowed_below_the_limit(self, repo: FakeRepo) -> None:
-        service = TaskService(repo=repo, workflows=FakeWorkflowRepo(_wip_limited()))
+        service = TaskService(repo=repo, tags=FakeTagRepo(), workflows=FakeWorkflowRepo(_wip_limited()))
         task = await service.create(title="a", description=None, status="new", priority=1)
         moved = await service.patch(task.id, fields={"status": "active"})
         assert moved.status == "active"
@@ -496,7 +552,7 @@ class TestWipLimits:
     async def test_create_into_a_full_entry_state_is_refused(self, repo: FakeRepo) -> None:
         # The create branch runs through ``resolve_entry``, a different engine method than the
         # move branch — a limit dropped from one would still pass the other's tests.
-        service = TaskService(repo=repo, workflows=FakeWorkflowRepo(_wip_limited_entry()))
+        service = TaskService(repo=repo, tags=FakeTagRepo(), workflows=FakeWorkflowRepo(_wip_limited_entry()))
         await service.create(title="a", description=None, status="active", priority=1)  # fills it
         repo.events.clear()
         with pytest.raises(WipLimitExceededError) as exc:
@@ -505,7 +561,7 @@ class TestWipLimits:
         assert repo.events == []
 
     async def test_replace_is_wip_limited(self, repo: FakeRepo) -> None:
-        service = TaskService(repo=repo, workflows=FakeWorkflowRepo(_wip_limited()))
+        service = TaskService(repo=repo, tags=FakeTagRepo(), workflows=FakeWorkflowRepo(_wip_limited()))
         first = await service.create(title="a", description=None, status="new", priority=1)
         await service.patch(first.id, fields={"status": "active"})  # fills "active" (limit 1)
         second = await service.create(title="b", description=None, status="new", priority=1)
@@ -520,20 +576,20 @@ class TestOccupancyGating:
     the engine decides (``needs_occupancy``), so these pin the query, not the rule."""
 
     async def test_never_queried_without_a_wip_limit_anywhere(self, repo: FakeRepo) -> None:
-        guardless = TaskService(repo=repo, workflows=FakeWorkflowRepo(_any_to_any()))
+        guardless = TaskService(repo=repo, tags=FakeTagRepo(), workflows=FakeWorkflowRepo(_any_to_any()))
         task = await guardless.create(title="a", description=None, status="new", priority=1)
         await guardless.patch(task.id, fields={"status": "in_progress"})
         assert repo.count_calls == 0
 
     async def test_not_queried_when_the_entered_state_is_uncapped(self, repo: FakeRepo) -> None:
         # A cap on some *other* state must not make every unrelated write pay for a count.
-        service = TaskService(repo=repo, workflows=FakeWorkflowRepo(_wip_limited()))
+        service = TaskService(repo=repo, tags=FakeTagRepo(), workflows=FakeWorkflowRepo(_wip_limited()))
         await service.create(title="a", description=None, status="new", priority=1)
         assert repo.count_calls == 0
 
     async def test_not_queried_when_the_write_enters_no_state(self, repo: FakeRepo) -> None:
         # Same-state writes are no-moves: nothing is entered, so no limit can fire.
-        service = TaskService(repo=repo, workflows=FakeWorkflowRepo(_wip_limited()))
+        service = TaskService(repo=repo, tags=FakeTagRepo(), workflows=FakeWorkflowRepo(_wip_limited()))
         task = await service.create(title="a", description=None, status="new", priority=1)
 
         await service.patch(task.id, fields={"status": "new", "priority": 5})
@@ -541,13 +597,81 @@ class TestOccupancyGating:
         assert repo.count_calls == 0
 
     async def test_queried_when_entering_a_capped_state(self, repo: FakeRepo) -> None:
-        service = TaskService(repo=repo, workflows=FakeWorkflowRepo(_wip_limited()))
+        service = TaskService(repo=repo, tags=FakeTagRepo(), workflows=FakeWorkflowRepo(_wip_limited()))
         task = await service.create(title="a", description=None, status="new", priority=1)
 
         await service.patch(task.id, fields={"status": "active"})
         assert repo.count_calls == 1
 
     async def test_queried_when_a_create_names_a_capped_entry_state(self, repo: FakeRepo) -> None:
-        service = TaskService(repo=repo, workflows=FakeWorkflowRepo(_wip_limited_entry()))
+        service = TaskService(repo=repo, tags=FakeTagRepo(), workflows=FakeWorkflowRepo(_wip_limited_entry()))
         await service.create(title="a", description=None, status="active", priority=1)
         assert repo.count_calls == 1
+
+
+class TestTagging:
+    """``TaskTagsChanged`` — FRD §5.1. Independent of ``TaskUpdated``: a tags-only edit moves
+    no Task column, so it must still fire (and still commit) on its own."""
+
+    async def test_create_with_tags_emits_tags_changed(self, service: TaskService, repo: FakeRepo) -> None:
+        await service.create(title="t", description=None, status=None, priority=3, tags=["urgent", "backend"])
+
+        changed = [e for e in repo.events if isinstance(e, TaskTagsChanged)]
+        assert len(changed) == 1
+        assert changed[0].tags == ["backend", "urgent"]
+        assert changed[0].added == ["backend", "urgent"]
+        assert changed[0].removed == []
+
+    async def test_create_without_tags_emits_no_tag_event(self, service: TaskService, repo: FakeRepo) -> None:
+        await service.create(title="t", description=None, status=None, priority=3)
+
+        assert not [e for e in repo.events if isinstance(e, TaskTagsChanged)]
+
+    async def test_patch_that_only_changes_tags_still_fires_and_persists(
+        self, service: TaskService, repo: FakeRepo
+    ) -> None:
+        task = await service.create(title="t", description=None, status=None, priority=3, tags=["a"])
+        repo.events.clear()
+
+        await service.patch(task.id, fields={"tags": ["b"]})
+
+        # No Task column moved, so no TaskUpdated — but the tag change is real and must commit.
+        assert [type(e) for e in repo.events] == [TaskTagsChanged]
+        emitted = repo.events[0]
+        assert isinstance(emitted, TaskTagsChanged)
+        assert (emitted.added, emitted.removed) == (["b"], ["a"])
+
+    async def test_patch_with_identical_tags_emits_nothing(self, service: TaskService, repo: FakeRepo) -> None:
+        task = await service.create(title="t", description=None, status=None, priority=3, tags=["a"])
+        repo.events.clear()
+
+        await service.patch(task.id, fields={"tags": ["a"]})
+
+        assert repo.events == []
+
+    async def test_patch_omitting_tags_leaves_them_untouched(self, service: TaskService, repo: FakeRepo) -> None:
+        task = await service.create(title="t", description=None, status=None, priority=3, tags=["keep"])
+        repo.events.clear()
+
+        await service.patch(task.id, fields={"priority": 5})
+
+        assert not [e for e in repo.events if isinstance(e, TaskTagsChanged)]
+        assert (await service.tags_for([task.id]))[task.id] == ["keep"]
+
+    async def test_put_omitting_tags_clears_them(self, service: TaskService, repo: FakeRepo) -> None:
+        task = await service.create(title="t", description=None, status=None, priority=3, tags=["gone"])
+        repo.events.clear()
+
+        await service.replace(task.id, title="t", description=None, status=None, priority=4)
+
+        changed = [e for e in repo.events if isinstance(e, TaskTagsChanged)]
+        assert len(changed) == 1
+        assert (changed[0].tags, changed[0].removed) == ([], ["gone"])
+        assert await service.tags_for([task.id]) == {}
+
+    async def test_names_differing_only_in_case_collapse_to_one_tag(self, service: TaskService) -> None:
+        task = await service.create(
+            title="t", description=None, status=None, priority=3, tags=["Urgent", "urgent", " URGENT "]
+        )
+
+        assert (await service.tags_for([task.id]))[task.id] == ["Urgent"]

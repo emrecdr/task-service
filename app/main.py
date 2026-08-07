@@ -23,6 +23,9 @@ from app.core.middleware import (
     SecurityHeadersMiddleware,
 )
 from app.core.outbox import OutboxRelay
+from app.services.tags.api.v1.router import router as tags_router
+from app.services.tags.domain.events import TAG_EVENT_TYPES
+from app.services.tags.infrastructure.listeners import register_listeners as register_tag_listeners
 from app.services.tasks.api.v1.router import router as tasks_router
 from app.services.tasks.domain.events import TASK_EVENT_TYPES
 from app.services.tasks.infrastructure.listeners import register_listeners as register_task_listeners
@@ -35,7 +38,7 @@ from app.services.workflows.infrastructure.seed import seed_workflow_if_missing
 # typed event a listener expects. Assembled here, the one place both features are imported —
 # so ``app.core.outbox`` needs no service import (layer rule 5).
 EVENT_REGISTRY: dict[str, type[Event]] = {
-    event_type.__name__: event_type for event_type in (*TASK_EVENT_TYPES, *WORKFLOW_EVENT_TYPES)
+    event_type.__name__: event_type for event_type in (*TASK_EVENT_TYPES, *WORKFLOW_EVENT_TYPES, *TAG_EVENT_TYPES)
 }
 
 
@@ -53,6 +56,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     bus = EventBus()
     register_task_listeners(bus)
     register_workflow_listeners(bus)
+    register_tag_listeners(bus)
     app.state.event_bus = bus
     # The in-process outbox relay delivers staged events. Disabled in tests, where delivery
     # is driven deterministically instead of by a background poller.
@@ -100,6 +104,7 @@ def create_app() -> FastAPI:
     app.include_router(diagnose_router)
     app.include_router(tasks_router, prefix=settings.api_prefix)
     app.include_router(workflow_router, prefix=settings.api_prefix)
+    app.include_router(tags_router, prefix=settings.api_prefix)
     # RED metrics (request count, latency, in-progress) at /metrics; kept out of
     # the OpenAPI schema so it stays an ops-only surface like the probes.
     Instrumentator().instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)

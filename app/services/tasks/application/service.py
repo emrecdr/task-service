@@ -1,7 +1,12 @@
 import uuid
+from collections.abc import Sequence
 from typing import Any
 
 from app.core.event_bus import Event
+from app.services.tags.constants import TagMatchOp
+from app.services.tags.domain.events import TaskTagsChanged
+from app.services.tags.domain.models import Tag
+from app.services.tags.interfaces import TagRepositoryInterface
 from app.services.tasks.application.dto import TaskListParams
 from app.services.tasks.domain.events import (
     TaskCompleted,
@@ -24,9 +29,11 @@ class TaskService:
         *,
         repo: TaskRepositoryInterface,
         workflows: WorkflowRepositoryInterface,
+        tags: TagRepositoryInterface,
     ) -> None:
         self._repo = repo
         self._workflows = workflows
+        self._tags = tags
 
     async def _engine(self) -> WorkflowEngine:
         """Wrap the active definition, read fresh. Read-only callers (``legal_moves``) use
@@ -49,6 +56,7 @@ class TaskService:
         description: str | None,
         status: str | None,
         priority: int,
+        tags: list[str] | None = None,
     ) -> Task:
         engine = await self._guarded_engine()
         # A create enters a state (so it is WIP-checked) but is not a transition, so no role
@@ -56,7 +64,13 @@ class TaskService:
         context = await self._context(engine, from_status=None, to_status=status)
         resolved = engine.resolve_entry(status, context=context)
         task = Task.from_input(title=title, description=description, status=resolved, priority=priority)
-        await self._persist(task, events=[TaskCreated(task=task.snapshot())], raw_title=title)
+        events: list[Event] = [TaskCreated(task=task.snapshot())]
+        if tags:
+            # The row must exist in the transaction before its tag links can reference it.
+            await self._stage_new(task, raw_title=title)
+            if (tag_event := await self._stage_tags(task.id, tags)) is not None:
+                events.append(tag_event)
+        await self._persist(task, events=events, raw_title=title)
         return task
 
     async def get(self, task_id: uuid.UUID) -> Task:
@@ -69,13 +83,27 @@ class TaskService:
         return task, engine.legal_moves(task.status)
 
     async def list(self, *, params: TaskListParams) -> tuple[list[Task], int]:
+        task_ids: set[uuid.UUID] | None = None
+        if params.tags:
+            # Resolve the tag filter to task IDs first. An empty result is a real answer —
+            # "no task carries these tags" — and must not be confused with "no filter", so it
+            # stays a set rather than collapsing to None.
+            task_ids = await self._tags.task_ids_matching(
+                [Tag.normalize_name(name) for name in params.tags],
+                match_all=params.op is TagMatchOp.AND,
+            )
         return await self._repo.list(
             statuses=params.statuses,
+            task_ids=task_ids,
             order_by=params.order_by,
             order_dir=params.order_dir,
             limit=params.limit,
             offset=params.offset,
         )
+
+    async def tags_for(self, task_ids: Sequence[uuid.UUID]) -> dict[uuid.UUID, list[str]]:
+        """Tag names per task, for response building. One batch query, never one per task."""
+        return await self._tags.names_for_tasks(task_ids)
 
     async def replace(
         self,
@@ -85,6 +113,7 @@ class TaskService:
         description: str | None,
         status: str | None,
         priority: int,
+        tags: list[str] | None = None,
         roles: frozenset[str] = frozenset(),
     ) -> Task:
         engine = await self._guarded_engine()
@@ -95,8 +124,14 @@ class TaskService:
         engine.check_move(task.status, target, context=context)
         # Snapshot after the checks — a refused write throws the copy away (matches ``patch``).
         previous = task.snapshot()
+        # Tags are staged BEFORE the task is mutated. Staging issues reads, and SQLAlchemy
+        # autoflushes pending changes before a query — so with the mutation applied first, a
+        # duplicate title would surface as a raw IntegrityError here instead of inside
+        # ``_persist``, escaping its translation to DuplicateTaskError (a 500, not a 409).
+        # PUT is full replacement, so an omitted ``tags`` clears them rather than leaving them.
+        tag_event = await self._stage_tags(task_id, tags or [])
         task.apply_replace(title=title, description=description, status=target, priority=priority)
-        await self._persist_update(task, previous, engine, raw_title=title)
+        await self._persist_update(task, previous, engine, raw_title=title, extra=tag_event)
         return task
 
     async def patch(
@@ -119,9 +154,14 @@ class TaskService:
             context = await self._context(engine, roles, from_status=task.status, to_status=target)
             engine.check_move(task.status, target, context=context)
         previous = task.snapshot()
+        tags = fields.pop("tags", None)
+        # Staged before ``apply_patch`` for the autoflush reason documented in ``replace``, and
+        # popped first because tags are not a Task column. PATCH is partial: an omitted ``tags``
+        # leaves the set alone, which ``_stage_tags`` reads from ``None``.
+        tag_event = await self._stage_tags(task_id, tags)
         task.apply_patch(fields)
         # ``fields["title"]`` (raw) if the patch renames; otherwise no collision is possible.
-        await self._persist_update(task, previous, engine, raw_title=fields.get("title", task.title))
+        await self._persist_update(task, previous, engine, raw_title=fields.get("title", task.title), extra=tag_event)
         return task
 
     async def delete(self, task_id: uuid.UUID) -> None:
@@ -145,13 +185,56 @@ class TaskService:
         return TransitionContext(roles=roles, occupancy=await self._repo.count_by_status() if needs else {})
 
     async def _persist_update(
-        self, updated: Task, previous: Task, engine: WorkflowEngine | None, *, raw_title: str
+        self,
+        updated: Task,
+        previous: Task,
+        engine: WorkflowEngine | None,
+        *,
+        raw_title: str,
+        extra: Event | None = None,
     ) -> None:
         """Persist a mutated task with its update events — or, if nothing actually changed, do
-        nothing (no commit, no events). ``engine`` is None only when status could not change."""
+        nothing (no commit, no events). ``engine`` is None only when status could not change.
+
+        ``extra`` carries a ``TaskTagsChanged`` when the tag set moved. It counts on its own:
+        a tags-only edit changes no ``Task`` column, so ``_update_events`` is empty, but the
+        staged join rows still need the commit that ``_persist`` performs.
+        """
         events = self._update_events(updated, previous, engine)
+        if extra is not None:
+            events.append(extra)
         if events:
             await self._persist(updated, events=events, raw_title=raw_title)
+
+    async def _stage_tags(self, task_id: uuid.UUID, names: list[str] | None) -> Event | None:
+        """Stage a task's tag set and return the event, or ``None`` when nothing moved.
+
+        Staged *before* the task's commit so the join rows, the task row and the outbox rows
+        are one transaction (TIS §5.1). ``names is None`` means "leave alone" — the caller has
+        already resolved omitted-vs-cleared into a list or ``None``.
+        """
+        if names is None:
+            return None
+        before = set((await self._tags.names_for_tasks([task_id])).get(task_id, []))
+        resolved = await self._tags.resolve(names)
+        # Compare on display names, since that is what the event and the API speak.
+        after = {name.strip() for name in names if name.strip()}
+        if before == after:
+            return None
+        await self._tags.set_for_task(task_id, list(resolved.values()))
+        return TaskTagsChanged(
+            task_id=task_id,
+            tags=sorted(after),
+            added=sorted(after - before),
+            removed=sorted(before - after),
+        )
+
+    async def _stage_new(self, task: Task, *, raw_title: str) -> None:
+        """Flush the new row into the open transaction, echoing the caller's title on a clash."""
+        try:
+            await self._repo.stage(task)
+        except DuplicateTaskError as err:
+            raise DuplicateTaskError(details={"title": raw_title}, original_error=err.original_error) from err
 
     async def _persist(self, task: Task, *, events: list[Event], raw_title: str) -> None:
         """Persist through the repo, but re-raise a duplicate with the caller's title verbatim:

@@ -20,6 +20,16 @@ class TaskRepositoryInterface(ABC):
         → ``DuplicateTaskError``)."""
 
     @abstractmethod
+    async def stage(self, task: Task) -> None:
+        """Insert the row into the open transaction without committing.
+
+        Exists so a caller can make a *new* task addressable mid-transaction — the tags join
+        has a foreign key to ``tasks``, and SQLAlchemy builds its flush order from
+        ``relationship()`` declarations, which these tables deliberately do not have. Without
+        an explicit flush the join rows can be inserted first and violate the constraint.
+        """
+
+    @abstractmethod
     async def get(self, task_id: uuid.UUID) -> Task: ...
 
     @abstractmethod
@@ -27,6 +37,7 @@ class TaskRepositoryInterface(ABC):
         self,
         *,
         statuses: list[str] | None,
+        task_ids: set[uuid.UUID] | None,
         order_by: TaskSortField,
         order_dir: OrderDirection,
         limit: int,
