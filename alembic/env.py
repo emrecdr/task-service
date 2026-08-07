@@ -26,6 +26,16 @@ if config.config_file_name is not None:
 target_metadata = SQLModel.metadata
 
 
+# ``compare_server_default`` is off by default, so a column default that exists in one place and not
+# the other is invisible to ``alembic check`` — verified by mutation: adding ``server_default='7'``
+# to ``Task.priority`` still reported "No new upgrade operations detected". It is left off in many
+# projects because Postgres round-trips some defaults into a form the comparison reads as a
+# difference (a ``SERIAL`` column's ``nextval(...)`` being the usual culprit), but on this schema it
+# is quiet: enabling it against the unmutated models detects nothing, and against the mutated one
+# reports a precise ``modify_default``.
+_COMPARE = {"compare_type": True, "compare_server_default": True}
+
+
 def run_migrations_offline() -> None:
     """Emit SQL without a live DB (``alembic upgrade --sql``)."""
     context.configure(
@@ -33,14 +43,14 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
-        compare_type=True,
+        **_COMPARE,
     )
     with context.begin_transaction():
         context.run_migrations()
 
 
 def do_run_migrations(connection: Connection) -> None:
-    context.configure(connection=connection, target_metadata=target_metadata, compare_type=True)
+    context.configure(connection=connection, target_metadata=target_metadata, **_COMPARE)
     with context.begin_transaction():
         context.run_migrations()
 
