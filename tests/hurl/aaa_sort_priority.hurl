@@ -1,6 +1,6 @@
 # Sort-by-priority E2E coverage.
 #
-# Runs FIRST in the suite (``aaa_`` prefix) so the in-memory SQLite is empty
+# Runs FIRST in the suite (``aaa_`` prefix) so the compose Postgres is empty
 # and ``items[N]`` absolute-index assertions are deterministic. Other files
 # share the DB and use JSONPath title-prefix filters instead.
 

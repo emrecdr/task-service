@@ -1,6 +1,6 @@
 # Full-flow scenario across all 5 mutating endpoints + filtered list.
 # Title prefix ``hurl flow`` keeps this isolated from other Hurl files
-# under ``--jobs 1`` against the shared in-memory SQLite.
+# under ``--jobs 1`` against the shared compose Postgres.
 
 # 1) Create four tasks with priorities 1/2/3/4, capture each id.
 POST {{base_url}}/v1/tasks
