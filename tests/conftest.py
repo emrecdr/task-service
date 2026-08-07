@@ -30,14 +30,19 @@ _TRUNCATE = text("TRUNCATE tasks, workflow_definitions, outbox RESTART IDENTITY 
 
 
 @pytest.fixture(scope="session", autouse=True)
-def _postgres_container() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]
-    """Start one Postgres for the whole session; point the app engine at it (NullPool)."""
+def postgres_url() -> Iterator[str]:
+    """Start one Postgres for the whole session; point the app engine at it (NullPool).
+
+    Yields the URL so a test needing a *second* database on the same server (the
+    migration-drift gate) can derive one instead of starting another container.
+    """
     with PostgresContainer("postgres:17", driver="asyncpg") as pg:
+        url = pg.get_connection_url()
         # NullPool: each operation opens a fresh connection on the current loop — needed
         # because Schemathesis drives the ASGI app in a separate portal loop, and a shared
         # pool's connections are loop-bound ("attached to a different loop").
-        database.configure(pg.get_connection_url(), poolclass=NullPool)
-        yield
+        database.configure(url, poolclass=NullPool)
+        yield url
 
 
 @pytest.fixture(autouse=True)
