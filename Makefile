@@ -11,7 +11,8 @@ export APP_PORT
 DOCKER_IMAGE := internal-task-service:dev
 DOCKER_COMPOSE := docker compose -f docker/docker-compose.yaml
 # The dev database is the compose ``postgres`` service plus an overlay publishing its port, so the
-# image, credentials and healthcheck have one definition rather than two that can drift apart.
+# image, healthcheck and volume have one definition rather than two that can drift apart. The
+# credentials are not single-sourced — see DEV_DB_USER below.
 DOCKER_COMPOSE_DEV := docker compose -f docker/docker-compose.yaml -f docker/docker-compose.dev.yaml -p task-service-dev
 # 5432 is what the default DATABASE_URL expects; exported so the overlay can publish it.
 DEV_DB_PORT ?= 5432
@@ -20,11 +21,15 @@ export DEV_DB_PORT
 DEV_DB_USER := taskservice
 DEV_DB_URL := postgresql+asyncpg://$(DEV_DB_USER):$(DEV_DB_USER)@localhost:$(DEV_DB_PORT)/$(DEV_DB_USER)
 
-# A command-line ``DEV_DB_PORT`` has to reach ``make run`` as well, or ``db-up DEV_DB_PORT=5433``
-# migrates 5433 and then the app connects to whatever .env pins. Only an explicit override exports
-# it — ``$(origin)`` is ``file`` for the default above — so a plain ``make run`` still takes
-# DATABASE_URL from .env, and nobody pointing at a remote database gets silently redirected.
-ifeq ($(origin DEV_DB_PORT),command line)
+# An overridden ``DEV_DB_PORT`` has to reach ``make run`` as well, or ``db-up DEV_DB_PORT=5433``
+# migrates 5433 and then the app connects to whatever .env pins — which on a machine where 5432 is
+# already taken means silently talking to someone else's database rather than failing. The test is
+# for the *default* (``file`` is the origin of the ``?=`` above) rather than for the override forms:
+# both ``make db-up DEV_DB_PORT=5433`` (``command line``) and ``DEV_DB_PORT=5433 make db-up``
+# (``environment``) must fire, and README documents the second style for APP_PORT. A plain
+# ``make run`` still takes DATABASE_URL from .env, so nobody pointing at a remote database is
+# redirected.
+ifneq ($(origin DEV_DB_PORT),file)
 export DATABASE_URL := $(DEV_DB_URL)
 endif
 

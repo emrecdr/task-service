@@ -45,14 +45,23 @@ def postgres_url() -> Iterator[str]:
         yield url
 
 
-@pytest.fixture(autouse=True)
-async def _fresh_data() -> None:  # pyright: ignore[reportUnusedFunction]
-    """Ensure the schema exists (idempotent) then reset rows: TRUNCATE + reseed.
+@pytest.fixture(scope="session", autouse=True)
+async def _schema(postgres_url: str) -> None:  # pyright: ignore[reportUnusedFunction]
+    """Build the schema once for the session.
 
-    Schema DDL runs here — in the test's own event loop / greenlet — rather than in
-    the session fixture, which would create engine state on a closed loop.
+    DDL lives in an *async* fixture rather than in ``postgres_url`` (which is sync) so it runs on
+    the test event loop instead of creating engine state on a closed one —
+    ``asyncio_default_fixture_loop_scope`` is ``session``, so that is the same loop every test
+    sees. Session-scoped because nothing ever drops the schema: running ``create_all`` before each
+    test re-paid a connection round trip several hundred times to confirm it had nothing to do.
     """
     await database.init_schema()
+
+
+@pytest.fixture(autouse=True)
+async def _fresh_data(_schema: None) -> None:  # pyright: ignore[reportUnusedFunction]
+    """Reset rows between tests: TRUNCATE + reseed. Depends on ``_schema`` so the tables exist
+    before the first TRUNCATE, rather than relying on fixture declaration order."""
     async with database.session_factory() as session:
         await session.execute(_TRUNCATE)
         await session.commit()

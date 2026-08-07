@@ -163,19 +163,18 @@ graphify-out/manifest.json
 # Claude Code per-machine settings
 .claude/settings.local.json
 
-# Graphify regenerable artifacts (exceed pre-commit size limit) + per-machine pointers
+# Graphify regenerable artifacts + per-machine pointers. All of these are rewritten wholesale by
+# every `/graphify update .`, so tracking them made each refresh a several-hundred-line diff of
+# machine-written text with no reviewable change in it (and the first two exceed the pre-commit
+# size limit). Saved query answers under graphify-out/memory/ stay tracked — authored once, not
+# rebuilt.
 graphify-out/graph.json
 graphify-out/graph.html
-graphify-out/.graphify_python
-graphify-out/.graphify_root
-
-# Graphify run output — rewritten wholesale on every build, so tracking it made each refresh a
-# several-hundred-line diff of machine-written text with no reviewable change in it. Regenerate
-# with `/graphify update .`. Saved query answers under graphify-out/memory/ stay tracked: those
-# are authored once and kept deliberately, not rebuilt.
 graphify-out/GRAPH_REPORT.md
 graphify-out/cost.json
 graphify-out/.graphify_labels.json
+graphify-out/.graphify_python
+graphify-out/.graphify_root
 
 # devt workflow state (recursive — catches sub-tree devt invocations)
 **/.devt/state/

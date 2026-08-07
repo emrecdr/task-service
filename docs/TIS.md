@@ -178,7 +178,7 @@ task-service/
 ├── .env.test                         # automated tests (gitignored)
 ├── .env.qa                           # QA / pre-prod (gitignored)
 ├── .env.prod                         # production (gitignored)
-├── .dockerignore                     # excludes .env* (bar .env.example) from the image
+├── .dockerignore                     # keeps .env* out of the build context
 ├── .pre-commit-config.yaml
 └── README.md
 ```
