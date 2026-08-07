@@ -207,16 +207,18 @@ the app no longer creates tables (Alembic owns the schema):
 ```bash
 make db-up          # start a host-reachable Postgres on :5432 (idempotent) + apply migrations
 make run            # uvicorn --reload on :8000 (override with APP_PORT=9000 make run)
-make db-down        # remove it again (storage is anonymous — its data is dropped)
+make db-down        # remove it again (its data volume goes too)
 ```
 
 The default `DATABASE_URL` (in `.env`) expects Postgres on `localhost:5432` with
 `taskservice/taskservice/taskservice`, which is exactly what `make db-up` starts. If you already
-run Postgres on that port, `db-up` says so and stops rather than fighting it — point
-`DATABASE_URL` at your instance instead, or override both together
-(`make db-up DEV_DB_PORT=5433` with a matching `DATABASE_URL`). Against a database you manage
-yourself, `make migrate` applies the schema on its own. (The compose Postgres publishes no ports —
-it is internal to the container stack and cannot back `make run`.)
+run Postgres on that port, `db-up` names the container holding it and stops rather than fighting
+it — either point `DATABASE_URL` at that instance, or move this one out of the way with
+`make db-up DEV_DB_PORT=5433 && make run DEV_DB_PORT=5433`, which carries the override through to
+the app as well as the database. Against a database you manage yourself, `make migrate` applies
+the schema on its own. (The compose Postgres publishes no ports of its own — it is internal to the
+container stack; `db-up` layers `docker/docker-compose.dev.yaml` on top to publish one, under a
+separate compose project so an E2E run's `down -v` cannot take your dev data with it.)
 
 ## Tests
 

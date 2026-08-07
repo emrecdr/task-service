@@ -1,0 +1,12 @@
+# Dev-only overlay for ``make db-up``. The base file deliberately publishes no Postgres port —
+# there the database is internal to the container stack — but ``make run`` executes uvicorn on the
+# host and needs to reach it, so this layer publishes one.
+#
+# Always applied with ``-p task-service-dev``. That project name is load-bearing, not cosmetic:
+# ``make hurl-e2e`` traps ``down -v`` on exit against the default ``docker`` project, so sharing a
+# project would let an E2E run delete the dev database's volume out from under it.
+
+services:
+  postgres:
+    ports:
+      - "${DEV_DB_PORT:-5432}:5432"

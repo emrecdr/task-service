@@ -10,13 +10,23 @@ APP_PORT ?= 8000
 export APP_PORT
 DOCKER_IMAGE := internal-task-service:dev
 DOCKER_COMPOSE := docker compose -f docker/docker-compose.yaml
-DEV_DB_CONTAINER := task-service-devdb
-# 5432 is what the default DATABASE_URL expects. Overriding this still migrates the container
-# ``db-up`` starts (see DEV_DB_URL), but ``make run`` reads DATABASE_URL — so move both together.
+# The dev database is the compose ``postgres`` service plus an overlay publishing its port, so the
+# image, credentials and healthcheck have one definition rather than two that can drift apart.
+DOCKER_COMPOSE_DEV := docker compose -f docker/docker-compose.yaml -f docker/docker-compose.dev.yaml -p task-service-dev
+# 5432 is what the default DATABASE_URL expects; exported so the overlay can publish it.
 DEV_DB_PORT ?= 5432
-# The dev container uses one value for user, password and database name, exactly as .env does.
+export DEV_DB_PORT
+# Must match the credentials docker/docker-compose.yaml gives the postgres service.
 DEV_DB_USER := taskservice
 DEV_DB_URL := postgresql+asyncpg://$(DEV_DB_USER):$(DEV_DB_USER)@localhost:$(DEV_DB_PORT)/$(DEV_DB_USER)
+
+# A command-line ``DEV_DB_PORT`` has to reach ``make run`` as well, or ``db-up DEV_DB_PORT=5433``
+# migrates 5433 and then the app connects to whatever .env pins. Only an explicit override exports
+# it — ``$(origin)`` is ``file`` for the default above — so a plain ``make run`` still takes
+# DATABASE_URL from .env, and nobody pointing at a remote database gets silently redirected.
+ifeq ($(origin DEV_DB_PORT),command line)
+export DATABASE_URL := $(DEV_DB_URL)
+endif
 
 .DEFAULT_GOAL := help
 
@@ -71,36 +81,27 @@ db-revision: ## 🗄️  Autogenerate a migration from model changes: make db-re
 	uv run alembic revision --autogenerate -m "$(m)"
 
 # The compose Postgres publishes no ports (internal-only, for the container stack), so it cannot
-# back ``make run``. This is the host-reachable one the default DATABASE_URL expects — started
-# idempotently, then migrated, because an empty schema is no more useful to ``make run`` than no
-# database. Not running ⇒ (re-)create: a failed run can leave a Created/Exited container behind,
-# so remove unconditionally rather than starting one that never worked.
+# back ``make run``; the dev overlay adds a published port. Started idempotently, then migrated,
+# because an empty schema is no more useful to ``make run`` than no database. The port pre-check
+# runs only when our own container is absent, so a re-run of an already-started stack is a no-op
+# rather than a conflict with itself — and it reports *which* container holds the port, which a
+# raw bind failure from Docker would not.
 db-up: ## 🗄️  Start a host-reachable dev Postgres on :$(DEV_DB_PORT) (idempotent) and apply migrations
-	@if [ -z "$$(docker ps -q -f name=^/$(DEV_DB_CONTAINER)$$)" ]; then \
-	  if [ -n "$$(lsof -t -i TCP:$(DEV_DB_PORT) -sTCP:LISTEN 2>/dev/null)" ]; then \
-	    echo "✗ port $(DEV_DB_PORT) is already in use — the default DATABASE_URL points there."; \
-	    echo "  Free it, or point DATABASE_URL at the instance already running:"; \
-	    docker ps --filter publish=$(DEV_DB_PORT) --format '    {{.Names}} ({{.Image}}) {{.Ports}}'; \
-	    exit 1; \
-	  fi; \
-	  docker rm -fv $(DEV_DB_CONTAINER) >/dev/null 2>&1 || true; \
-	  docker run -d --name $(DEV_DB_CONTAINER) -p $(DEV_DB_PORT):5432 \
-	    -e POSTGRES_USER=$(DEV_DB_USER) -e POSTGRES_PASSWORD=$(DEV_DB_USER) -e POSTGRES_DB=$(DEV_DB_USER) \
-	    postgres:17 >/dev/null; \
+	@if [ -z "$$($(DOCKER_COMPOSE_DEV) ps -q postgres 2>/dev/null)" ] && \
+	    [ -n "$$(lsof -t -i TCP:$(DEV_DB_PORT) -sTCP:LISTEN 2>/dev/null)" ]; then \
+	  echo "✗ port $(DEV_DB_PORT) is already in use — the default DATABASE_URL points there."; \
+	  echo "  Free it, choose another port (make db-up DEV_DB_PORT=5433), or point DATABASE_URL at:"; \
+	  docker ps --filter publish=$(DEV_DB_PORT) --format '    {{.Names}} ({{.Image}}) {{.Ports}}'; \
+	  exit 1; \
 	fi
-	@for _ in $$(seq 1 30); do \
-	   if docker exec $(DEV_DB_CONTAINER) pg_isready -U $(DEV_DB_USER) -d $(DEV_DB_USER) >/dev/null 2>&1; then \
-	     echo "✓ postgres ready on localhost:$(DEV_DB_PORT)"; exit 0; \
-	   fi; \
-	   sleep 1; \
-	 done; \
-	 echo "✗ postgres did not become ready — check: docker logs $(DEV_DB_CONTAINER)"; exit 1
-	DATABASE_URL=$(DEV_DB_URL) $(MAKE) migrate
+	@$(DOCKER_COMPOSE_DEV) up -d --wait postgres
+	@echo "✓ postgres ready on localhost:$(DEV_DB_PORT)"
+	@DATABASE_URL=$(DEV_DB_URL) $(MAKE) migrate
 
-# ``-v`` drops the anonymous volume the postgres image declares for /var/lib/postgresql/data;
-# without it every up/down cycle would orphan one and the data would outlive the container.
-db-down: ## 🛑 Remove the dev Postgres container (storage is anonymous — its data is dropped)
-	@docker rm -fv $(DEV_DB_CONTAINER) >/dev/null 2>&1 || true
+# ``-v`` drops the named volume the stack declares for /var/lib/postgresql/data; without it the
+# data would outlive the container and a later ``db-up`` would start on a stale schema.
+db-down: ## 🛑 Remove the dev Postgres (``down -v`` — its data volume goes with it)
+	@$(DOCKER_COMPOSE_DEV) down -v
 	@echo "✓ dev postgres removed"
 
 # --- E2E (against running container) ---------------------------------------
