@@ -1,7 +1,10 @@
 """Tags through the HTTP surface: the four decisions in FRD §2.7 and the ``?tag=``/``?op=``
 filter in §3.3, end to end against a real Postgres."""
 
+from app.core.errors import ErrorCode
 from httpx import AsyncClient
+
+from tests.conftest import assert_error
 
 
 async def _create(client: AsyncClient, title: str, *, tags: list[str] | None = None, priority: int = 3) -> str:
@@ -137,3 +140,46 @@ class TestTagFilter:
         await client.patch(f"/v1/tasks/{tagged_new}", json={"priority": 1})
 
         assert await _titles(client, "tag=x&status=new") == {"keep", "wrong-status"}
+
+
+class TestTaggingUnderRefusal:
+    """Tagging must not disturb how a refused write reports itself.
+
+    These paths combine tags with a duplicate title, which is where the two ordering fixes in
+    ``TaskService`` are load-bearing: the task row has to be staged before its tag links can
+    reference it, and no tag read may run between mutating the task and the commit that
+    translates the unique violation — an autoflush there surfaces a raw IntegrityError (500)
+    instead of ``duplicate_task`` (409).
+    """
+
+    async def test_create_with_tags_and_duplicate_title_returns_409(self, client: AsyncClient) -> None:
+        await _create(client, "dupe", tags=["a"])
+
+        r = await client.post("/v1/tasks", json={"title": "dupe", "priority": 3, "tags": ["b"]})
+
+        assert_error(r, 409, ErrorCode.DUPLICATE_TASK)
+
+    async def test_put_rename_onto_a_taken_title_with_tags_returns_409(self, client: AsyncClient) -> None:
+        await _create(client, "taken", tags=["a"])
+        other = await _create(client, "other", tags=["b"])
+
+        r = await client.put(f"/v1/tasks/{other}", json={"title": "taken", "priority": 3, "tags": ["c"]})
+
+        assert_error(r, 409, ErrorCode.DUPLICATE_TASK)
+
+    async def test_patch_rename_onto_a_taken_title_with_tags_returns_409(self, client: AsyncClient) -> None:
+        await _create(client, "taken", tags=["a"])
+        other = await _create(client, "other", tags=["b"])
+
+        r = await client.patch(f"/v1/tasks/{other}", json={"title": "taken", "tags": ["c"]})
+
+        assert_error(r, 409, ErrorCode.DUPLICATE_TASK)
+
+    async def test_a_refused_create_leaves_no_orphan_tag(self, client: AsyncClient) -> None:
+        # The tag write shares the task's transaction, so a rolled-back create must not mint
+        # vocabulary as a side effect.
+        await _create(client, "dupe", tags=["kept"])
+
+        await client.post("/v1/tasks", json={"title": "dupe", "priority": 3, "tags": ["ghost"]})
+
+        assert {t["name"] for t in (await client.get("/v1/tags")).json()["items"]} == {"kept"}
