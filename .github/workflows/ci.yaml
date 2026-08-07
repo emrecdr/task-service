@@ -13,8 +13,8 @@ permissions:
   contents: read
 
 # One in-flight run per PR, superseded on push: a PR only needs a verdict on its latest commit, and
-# without this every push starts a full duplicate of the ~2.5-minute ``test`` job, which is where
-# essentially all of this workflow's wall clock lives. Pushes get a per-commit group instead,
+# without this every push starts a full duplicate run of every gate below. Pushes get a per-commit
+# group instead,
 # because work lands on main directly and each landed commit should keep its own verdict. Sharing
 # one group and relying on ``cancel-in-progress: false`` would not deliver that: GitHub holds at
 # most one *pending* run per group, so a third push while the first is still running cancels the
@@ -29,8 +29,15 @@ env:
   # (``hurl_<version>_amd64.deb``); the bare ``hurl_amd64.deb`` URL 404s.
   HURL_VERSION: 8.0.1
 
+# The gates below are mutually independent, so they run as separate jobs rather than as steps in
+# one. Measured on a green run, the combined job was 172s of strictly serial work — pytest 47s,
+# schemathesis 60s and Hurl 34s waiting on each other for no reason — against a ~67s critical path
+# split up. Each job re-pays ~6s of checkout and dependency sync, which on a public repo costs
+# nothing but wall clock already saved several times over. They deliberately do not ``needs:`` the
+# static gates: a lint failure should not withhold the test verdict when a runner is free anyway.
 jobs:
-  test:
+  static:
+    name: Static gates
     runs-on: ubuntu-latest
     env:
       APP_ENV: test
@@ -54,11 +61,52 @@ jobs:
       - name: Typecheck
         run: uv run pyright
 
-      - name: Pytest (unit + integration + contract, coverage gate)
+  pytest:
+    name: Pytest (unit + integration + contract)
+    runs-on: ubuntu-latest
+    env:
+      APP_ENV: test
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --all-groups
+
+      - name: Pytest (coverage gate)
         run: uv run pytest
 
-      - name: Schemathesis (property-based OpenAPI tests, ASGI in-process)
+  schemathesis:
+    name: Schemathesis (property-based OpenAPI)
+    runs-on: ubuntu-latest
+    env:
+      APP_ENV: test
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --all-groups
+
+      - name: Schemathesis (ASGI in-process)
         run: make schemathesis
+
+  hurl:
+    # No uv and no dependency sync: this suite is ``docker compose`` plus the ``hurl`` binary, and
+    # the container carries its own ``APP_ENV=prod`` baked in by the Dockerfile. Syncing the project
+    # environment here would install ~65 wheels nothing in this job runs.
+    name: Hurl E2E (container)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
 
       - name: Install Hurl
         run: |
@@ -82,7 +130,10 @@ jobs:
   migrations:
     # Alembic owns the production schema, but the pytest suite builds its schema from
     # SQLModel.metadata (create_all) — so a migration that drifts from the models would
-    # never be caught by tests. This job builds the schema the way prod does and gates on drift.
+    # never be caught by tests. This job builds the schema the way prod does and runs
+    # ``alembic check``, which compares tables and columns but *not* partial-index predicates
+    # (verified: a changed ``postgresql_where`` still reports "No new upgrade operations
+    # detected"). Predicates are gated by tests/integration/core/test_migration_drift.py.
     runs-on: ubuntu-latest
     services:
       postgres:
