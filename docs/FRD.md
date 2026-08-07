@@ -210,23 +210,24 @@ Listeners register at app startup against the `EventBus` the lifespan builds and
 
 ## 6. Configuration
 
-Configuration is loaded via `pydantic-settings` from environment variables and a **per-environment `.env` file** selected by the `APP_ENV` variable.
+Configuration is loaded via `pydantic-settings` from environment variables, a shared `.env` base file, and a **per-environment `.env.<APP_ENV>` file** layered on top of it.
 
 ### 6.1 Per-environment file layout
 
 | File           | Loaded when    | Purpose                                                                               |
 | -------------- | -------------- | ------------------------------------------------------------------------------------- |
+| `.env`         | always         | Shared base layer. Loaded first; every key may be overridden per environment.          |
 | `.env.dev`     | `APP_ENV=dev`  | Local developer machine. Verbose logs, dev DB URL.                                    |
 | `.env.test`    | `APP_ENV=test` | Automated test runs (pytest, CI test stage). Quiet logs, isolated DB.                 |
 | `.env.qa`      | `APP_ENV=qa`   | Shared QA environment for manual / exploratory testing and pre-production validation. |
 | `.env.prod`    | `APP_ENV=prod` | Production.                                                                           |
-| `.env.example` | never loaded   | Reference template, checked into VCS. Every other `.env.*` file is gitignored.        |
+| `.env.example` | never loaded   | Reference template, checked into VCS. Every other `.env*` file is gitignored.          |
 
 Rules:
 
-1. The active file is resolved by `APP_ENV` **before** Settings instantiation. If `APP_ENV` is unset, the loader defaults to `dev`.
+1. Both files are loaded, in order — `.env` first, then the `APP_ENV`-selected `.env.<APP_ENV>`, which **overrides** any key it repeats. `APP_ENV` is read **before** Settings instantiation and defaults to `dev` when unset.
 2. Environment variables already present in the process **override** anything loaded from the file. This means container orchestrators (k8s secrets, Bitbucket Pipelines variables) win over file contents.
-3. The Docker image **must not** bake any `.env.*` file in (enforced by `.dockerignore`). The image takes its config from real environment variables; `.env.*` files are a local-development convenience only.
+3. The Docker image **must not** bake any `.env*` file in (enforced by `.dockerignore`). The image takes its config from real environment variables; `.env*` files are a local-development convenience only.
 4. Secrets never live in `.env.example`. Use placeholder values such as `__REPLACE_ME__`.
 
 ### 6.2 Variable reference

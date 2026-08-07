@@ -13,6 +13,9 @@ def test_json_logs_render_machine_parseable_output(
     """The qa/prod renderer branch. Every other test runs under dev/test, so they all
     exercise ``ConsoleRenderer`` — without this, the one format that actually reaches a
     log aggregator is the one format nothing checks."""
+    # Rebind the name ``setup_logging`` reads rather than mutating the shared ``settings``
+    # singleton: every module holds that same object, so mutating it would put the whole process
+    # in PROD for the duration. ``log_level=None`` selects the APP_ENV matrix default (INFO).
     monkeypatch.setattr("app.core.logging.settings", Settings(app_env=Environment.PROD, log_level=None))
     previous = structlog.get_config()
     try:

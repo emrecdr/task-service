@@ -11,19 +11,24 @@ export APP_PORT
 DOCKER_IMAGE := internal-task-service:dev
 DOCKER_COMPOSE := docker compose -f docker/docker-compose.yaml
 DEV_DB_CONTAINER := task-service-devdb
-# 5432 is what the default DATABASE_URL expects; override both together if it is taken.
+# 5432 is what the default DATABASE_URL expects. Overriding this still migrates the container
+# ``db-up`` starts (see DEV_DB_URL), but ``make run`` reads DATABASE_URL — so move both together.
 DEV_DB_PORT ?= 5432
+# The dev container uses one value for user, password and database name, exactly as .env does.
+DEV_DB_USER := taskservice
+DEV_DB_URL := postgresql+asyncpg://$(DEV_DB_USER):$(DEV_DB_USER)@localhost:$(DEV_DB_PORT)/$(DEV_DB_USER)
 
 .DEFAULT_GOAL := help
 
 help: ## ✨ Show this help message
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-22s\033[0m %s\n", $$1, $$2}'
 
-# Stops exactly where infrastructure starts: ``migrate-check``/``hurl-e2e``/``docker-build`` need
-# Docker + Postgres, so including them would make a laptop with Docker off fail the gate. ``pip-audit``
-# is CI-only on purpose — its verdict tracks the CVE feed, not the diff, so it belongs somewhere a new
-# advisory *should* stop a deploy, not somewhere it blocks an unrelated push.
-all: lint typecheck test schemathesis ## ✨ One-shot pre-push: every CI gate that needs no Docker/Postgres
+# Pre-push gate: the CI checks that need nothing beyond a checkout and a Docker daemon — the pytest
+# suite brings its own Postgres via testcontainers. Deliberately not a CI mirror. Gates wanting a
+# reachable ``DATABASE_URL``, a built image, or a compose stack stay there, as does ``pip-audit``,
+# whose verdict tracks the CVE feed rather than the diff — a new advisory *should* stop a deploy,
+# not an unrelated push.
+all: lint typecheck test schemathesis ## ✨ One-shot pre-push: static gates + full pytest + schemathesis
 
 install: ## 📦 Sync dependencies and wire pre-commit hooks
 	uv sync --all-groups
@@ -66,38 +71,36 @@ db-revision: ## 🗄️  Autogenerate a migration from model changes: make db-re
 	uv run alembic revision --autogenerate -m "$(m)"
 
 # The compose Postgres publishes no ports (internal-only, for the container stack), so it cannot
-# back ``make run``. This is the host-reachable one the default DATABASE_URL expects, matching the
-# snippet README documents — started idempotently, then migrated, because an empty schema is no
-# more useful to ``make run`` than no database.
+# back ``make run``. This is the host-reachable one the default DATABASE_URL expects — started
+# idempotently, then migrated, because an empty schema is no more useful to ``make run`` than no
+# database. Not running ⇒ (re-)create: a failed run can leave a Created/Exited container behind,
+# so remove unconditionally rather than starting one that never worked.
 db-up: ## 🗄️  Start a host-reachable dev Postgres on :$(DEV_DB_PORT) (idempotent) and apply migrations
-	@if [ -z "$$(docker ps -q -f name=^/$(DEV_DB_CONTAINER)$$)" ] && \
-	    [ -n "$$(lsof -t -i TCP:$(DEV_DB_PORT) -sTCP:LISTEN 2>/dev/null)" ]; then \
-	  echo "✗ port $(DEV_DB_PORT) is already in use — the default DATABASE_URL points there."; \
-	  echo "  Free it, or point DATABASE_URL at the instance already running:"; \
-	  docker ps --format '    {{.Names}} ({{.Image}}) {{.Ports}}' | grep $(DEV_DB_PORT) || true; \
-	  exit 1; \
-	fi
-	@# A previous failed run can leave a container in ``Created``; ``start`` would then take the
-	@# idempotent branch on a container that never worked. Remove any non-running one first.
-	@if [ -n "$$(docker ps -aq -f name=^/$(DEV_DB_CONTAINER)$$)" ] && \
-	    [ -z "$$(docker ps -q -f name=^/$(DEV_DB_CONTAINER)$$)" ]; then \
-	  docker rm -f $(DEV_DB_CONTAINER) >/dev/null 2>&1 || true; \
-	fi
-	@docker ps -q -f name=^/$(DEV_DB_CONTAINER)$$ | grep -q . || \
+	@if [ -z "$$(docker ps -q -f name=^/$(DEV_DB_CONTAINER)$$)" ]; then \
+	  if [ -n "$$(lsof -t -i TCP:$(DEV_DB_PORT) -sTCP:LISTEN 2>/dev/null)" ]; then \
+	    echo "✗ port $(DEV_DB_PORT) is already in use — the default DATABASE_URL points there."; \
+	    echo "  Free it, or point DATABASE_URL at the instance already running:"; \
+	    docker ps --filter publish=$(DEV_DB_PORT) --format '    {{.Names}} ({{.Image}}) {{.Ports}}'; \
+	    exit 1; \
+	  fi; \
+	  docker rm -fv $(DEV_DB_CONTAINER) >/dev/null 2>&1 || true; \
 	  docker run -d --name $(DEV_DB_CONTAINER) -p $(DEV_DB_PORT):5432 \
-	    -e POSTGRES_USER=taskservice -e POSTGRES_PASSWORD=taskservice -e POSTGRES_DB=taskservice \
-	    postgres:17 >/dev/null
-	@for i in $$(seq 1 30); do \
-	   docker exec $(DEV_DB_CONTAINER) pg_isready -U taskservice -d taskservice >/dev/null 2>&1 && break; \
+	    -e POSTGRES_USER=$(DEV_DB_USER) -e POSTGRES_PASSWORD=$(DEV_DB_USER) -e POSTGRES_DB=$(DEV_DB_USER) \
+	    postgres:17 >/dev/null; \
+	fi
+	@for _ in $$(seq 1 30); do \
+	   if docker exec $(DEV_DB_CONTAINER) pg_isready -U $(DEV_DB_USER) -d $(DEV_DB_USER) >/dev/null 2>&1; then \
+	     echo "✓ postgres ready on localhost:$(DEV_DB_PORT)"; exit 0; \
+	   fi; \
 	   sleep 1; \
 	 done; \
-	 docker exec $(DEV_DB_CONTAINER) pg_isready -U taskservice -d taskservice >/dev/null 2>&1 || \
-	   { echo "✗ postgres did not become ready — check: docker logs $(DEV_DB_CONTAINER)"; exit 1; }
-	@echo "✓ postgres ready on localhost:$(DEV_DB_PORT)"
-	$(MAKE) migrate
+	 echo "✗ postgres did not become ready — check: docker logs $(DEV_DB_CONTAINER)"; exit 1
+	DATABASE_URL=$(DEV_DB_URL) $(MAKE) migrate
 
+# ``-v`` drops the anonymous volume the postgres image declares for /var/lib/postgresql/data;
+# without it every up/down cycle would orphan one and the data would outlive the container.
 db-down: ## 🛑 Remove the dev Postgres container (storage is anonymous — its data is dropped)
-	@docker rm -f $(DEV_DB_CONTAINER) >/dev/null 2>&1 || true
+	@docker rm -fv $(DEV_DB_CONTAINER) >/dev/null 2>&1 || true
 	@echo "✓ dev postgres removed"
 
 # --- E2E (against running container) ---------------------------------------

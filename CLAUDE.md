@@ -110,7 +110,7 @@ The `Task` SQLModel row **is** the domain entity (`table=True`). There is no sep
 
 ## Configuration
 
-`pydantic-settings` selects a per-environment `.env.<APP_ENV>` file. `APP_ENV ∈ {dev, test, qa, prod}`, defaults to `dev`. Process env vars **override** file contents (k8s/CI win). `.env.example` is the only `.env.*` checked in; `.dockerignore` keeps `.env.*` out of the image. The `APP_ENV → (log_level, json_logs, expose_stack_traces)` matrix is in FRD §6.3.
+`pydantic-settings` loads a shared `.env` base layer plus a per-environment `.env.<APP_ENV>` overlay, the overlay winning on any key both set. `APP_ENV ∈ {dev, test, qa, prod}`, defaults to `dev`. Process env vars **override** file contents (k8s/CI win). `.env.example` is the only `.env*` checked in; `.dockerignore` keeps `.env*` out of the image. The `APP_ENV → (log_level, json_logs, expose_stack_traces)` matrix is in FRD §6.3.
 
 ## Postgres specifics
 

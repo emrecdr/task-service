@@ -12,12 +12,17 @@ on:
 permissions:
   contents: read
 
-# One in-flight run per ref. Without this, every push to an open PR starts a full duplicate
-# run — including two production image builds and two Trivy scans, the most expensive things
-# in this workflow. Cancelling is safe because CI only tests here; it deploys nothing.
+# One in-flight run per PR, superseded on push: a PR only needs a verdict on its latest commit, and
+# without this every push starts a full duplicate of the ~2.5-minute ``test`` job, which is where
+# essentially all of this workflow's wall clock lives. Pushes get a per-commit group instead,
+# because work lands on main directly and each landed commit should keep its own verdict. Sharing
+# one group and relying on ``cancel-in-progress: false`` would not deliver that: GitHub holds at
+# most one *pending* run per group, so a third push while the first is still running cancels the
+# second. Each ternary branch is already unique to its event — a PR ref is never a SHA — so neither
+# needs a discriminator appended to tell the two kinds of group apart.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   # Pin Hurl explicitly — release assets are version-named
@@ -115,6 +120,9 @@ jobs:
           uv run alembic upgrade head
 
   security-scan:
+    # ``trivy-action`` tags carry a ``v`` prefix — ``@0.28.0`` (without it) resolves to nothing and
+    # GitHub fails the job in ~3s before any step runs, which reads like a flake rather than a
+    # scanner that never scanned. Keep the ``v``.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -123,7 +131,7 @@ jobs:
         run: docker build -f docker/Dockerfile -t internal-task-service:ci .
 
       - name: Trivy image scan (OS + installed packages)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: internal-task-service:ci
           severity: CRITICAL,HIGH
@@ -131,7 +139,7 @@ jobs:
           exit-code: "1"
 
       - name: Trivy filesystem scan (project dependencies + config)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .

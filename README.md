@@ -233,7 +233,7 @@ Tests live at four layers, each chosen to give a _different_ kind of confidence:
 The split rule for unit vs. integration: _can this test run with only my feature module imported?_ Yes → unit test, lives in `app/services/<feature>/tests/`. No (needs the full FastAPI app, real HTTP, or another feature) → cross-boundary, lives in `tests/`.
 
 ```bash
-make all                # lint + typecheck + full pytest + schemathesis (334 tests, 97% coverage; gate at 80%)
+make all                # lint + typecheck + full pytest + schemathesis (coverage gate at 80%)
 make test               # full pytest with coverage gate
 make test-unit          # feature-local unit tests only — fast, no FastAPI/DB
 make test-integration   # in-process FastAPI + Postgres (testcontainers)

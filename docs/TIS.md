@@ -173,11 +173,12 @@ task-service/
 ├── ruff.toml
 ├── Makefile                          # `make hurl-e2e`, `make test`, `make lint`
 ├── .env.example                      # checked-in reference template
+├── .env                              # shared base layer (gitignored)
 ├── .env.dev                          # local development (gitignored)
 ├── .env.test                         # automated tests (gitignored)
 ├── .env.qa                           # QA / pre-prod (gitignored)
 ├── .env.prod                         # production (gitignored)
-├── .dockerignore                     # excludes .env.* from the image
+├── .dockerignore                     # excludes .env* (bar .env.example) from the image
 ├── .pre-commit-config.yaml
 └── README.md
 ```
@@ -443,7 +444,7 @@ Both are `async def` to match the route convention (CLAUDE.md). They live under 
 
 `pydantic-settings` with two layers of resolution:
 
-1. **Per-environment `.env.<APP_ENV>` file** — `Settings.model_config` sets `env_file=(".env", f".env.{APP_ENV}")`, with `APP_ENV` read from `os.getenv("APP_ENV", "dev")` at import time. Both files are loaded, in order: `.env` is a shared base layer and the per-environment file (`.env.dev` / `.env.test` / `.env.qa` / `.env.prod`) overrides any key it repeats. `.env.example` is the only file checked in; the real per-env files are gitignored and `.dockerignore`-ignored.
+1. **Layered `.env` files** — `Settings.model_config` sets `env_file=(".env", f".env.{APP_ENV}")`, with `APP_ENV` read from `os.getenv("APP_ENV", "dev")` at import time. Both files are loaded, in order: `.env` is a shared base layer and the per-environment file (`.env.dev` / `.env.test` / `.env.qa` / `.env.prod`) overrides any key it repeats. `.env.example` is the only file checked in; the real per-env files are gitignored and `.dockerignore`-ignored.
 2. **Process env vars override file contents** — so k8s ConfigMaps, CI secrets, and `APP_ENV=qa LOG_LEVEL=DEBUG uv run …` all win without editing files.
 
 The `Settings` class exposes three derived properties driven by the `APP_ENV → defaults` matrix (FRD §6.3): `log_level_int`, `json_logs`, `expose_stack_traces`. The matrix is implementation, not contract — change it here and everything that reads `settings.json_logs` (logging, middleware, error handler) follows.

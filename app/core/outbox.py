@@ -33,7 +33,7 @@ import time
 import uuid
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Any, Self, cast
+from typing import Any, Final, Self, cast
 
 from sqlalchemy import Column, CursorResult, DateTime, Index, delete
 from sqlalchemy.dialects.postgresql import JSONB
@@ -87,18 +87,15 @@ class OutboxRecord(SQLModel, table=True):
         )
 
 
-# What "still worth delivering" means, stated once: ``deliver_pending`` filters on it and
-# ``ix_outbox_deliverable`` is built over it, so the poll and the index it depends on cannot
-# drift apart. Nothing would catch it if they did — ``alembic check`` compares the migration to
-# the model, never the model to a query — and the symptom is not an error but a silent fall back
-# to a sequential scan.
-DELIVERABLE = col(OutboxRecord.published_at).is_(None) & col(OutboxRecord.dead_lettered_at).is_(None)
+# Each clause below is shared by a query and the partial index declared over it. Postgres uses a
+# partial index only when the query's WHERE *implies* the index predicate, and nothing would catch a
+# drift — ``alembic check`` compares the migration to the model, never either of them to a query — so
+# the symptom is not an error but a silent fall back to a sequential scan. The migration spells the
+# same predicates as raw SQL (``create_all`` is tests-only), so a change here still needs one written.
 
-# The prune's anchor clause, stated once: ``purge_published`` filters on it — alongside its own
-# age and dead-letter conditions — and ``ix_outbox_published_at`` is built over it. Postgres uses
-# a partial index only when the query's WHERE *implies* the index predicate, so this shared clause
-# is precisely what keeps the prune off a sequential scan.
-PUBLISHED = col(OutboxRecord.published_at).is_not(None)
+_DELIVERABLE: Final = col(OutboxRecord.published_at).is_(None) & col(OutboxRecord.dead_lettered_at).is_(None)
+# The prune's anchor only — ``purge_published`` adds its own age and dead-letter conditions.
+_PUBLISHED: Final = col(OutboxRecord.published_at).is_not(None)
 
 # The indexes live out here, not in ``__table_args__``: inside the class body the fields are
 # still plain annotations, and only become the instrumented attributes ``col()`` needs once
@@ -110,12 +107,12 @@ PUBLISHED = col(OutboxRecord.published_at).is_not(None)
 # oldest rows, would otherwise sort *first* and be re-examined on every tick forever.
 # (``retry_count < N`` could not live here anyway — an index predicate must be immutable, so it
 # cannot reference a runtime setting.)
-Index("ix_outbox_deliverable", col(OutboxRecord.occurred_at), postgresql_where=DELIVERABLE)
+Index("ix_outbox_deliverable", col(OutboxRecord.occurred_at), postgresql_where=_DELIVERABLE)
 
 # Drives the retention prune. Fresh rows have ``published_at IS NULL`` so they never enter this
 # index — it costs the request-path insert nothing, and gains an entry only when the relay marks
 # a row delivered, off the hot path.
-Index("ix_outbox_published_at", col(OutboxRecord.published_at), postgresql_where=PUBLISHED)
+Index("ix_outbox_published_at", col(OutboxRecord.published_at), postgresql_where=_PUBLISHED)
 
 
 def stage_events(session: AsyncSession, events: Sequence[Event]) -> None:
@@ -143,7 +140,7 @@ async def deliver_pending(
     """
     stmt = (
         select(OutboxRecord)
-        .where(DELIVERABLE)
+        .where(_DELIVERABLE)
         .order_by(col(OutboxRecord.occurred_at).asc(), col(OutboxRecord.id).asc())
         .limit(batch_size)
         .with_for_update(skip_locked=True)
@@ -216,7 +213,7 @@ async def purge_published(
             col(OutboxRecord.id).in_(
                 select(col(OutboxRecord.id))
                 .where(
-                    PUBLISHED,
+                    _PUBLISHED,
                     col(OutboxRecord.dead_lettered_at).is_(None),
                     col(OutboxRecord.published_at) <= cutoff,
                 )
