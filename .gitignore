@@ -148,6 +148,11 @@ secrets/
 # devt memory auto-index debounce marker (transient)
 .devt/memory/.auto-index-stamp
 
+# devt candidate-surfacing markers (transient — a bare timestamp and a counter the plugin
+# rewrites as it runs, so tracking them dirties the tree on every session)
+.devt/memory/.last-candidate-surface
+.devt/memory/.last-candidate-escalation
+
 # devt memory export bundles (transient — share via explicit channel)
 .devt/memory/export-*.json
 
