@@ -36,7 +36,7 @@ There is no `TagCreated`: creation is a side effect of tagging, already reported
 ## Query shapes that matter
 
 - `names_for_tasks(task_ids)` is **batch by design**. A per-task lookup would make `GET /v1/tasks` N+1 — one extra query per row returned.
-- `task_ids_with_all(name_keys)` does the AND in SQL (`GROUP BY task_id HAVING COUNT(DISTINCT tag_id) = :n`), not by intersecting sets in Python.
+- `task_ids_matching(name_keys, match_all=…)` resolves both `?op=` modes in SQL, not by combining sets in Python: `and` is `GROUP BY task_id HAVING COUNT(DISTINCT tag_id) = :n`, `or` is `DISTINCT task_id WHERE tag_id IN (…)`. `op` never reaches the status filter — a task holds one status, so an AND across two could not match.
 
 ## Errors
 

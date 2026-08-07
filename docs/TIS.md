@@ -330,7 +330,7 @@ Four methods, shaped by how the tasks feature actually consumes them:
 | `resolve(names) -> dict[str, uuid.UUID]` | Map submitted names to tag IDs, creating any that do not exist. Returns keyed by `name_key`, so the caller's casing is irrelevant. One round trip for the whole list rather than one per tag. |
 | `set_for_task(task_id, tag_ids)` | Replace a task's tag set wholesale. Replacement, not merge — §2.7 rule 2. |
 | `names_for_tasks(task_ids) -> dict[uuid.UUID, list[str]]` | Batch lookup for list responses. **This shape is the whole point**: a per-task call would make `GET /v1/tasks` N+1, one query per row returned. |
-| `task_ids_with_all(name_keys) -> set[uuid.UUID]` | The `?tag=` filter. Returns only tasks holding *every* named tag, matching §3.3's narrowing semantics; the AND is done in SQL (`GROUP BY … HAVING COUNT(DISTINCT tag_id) = :n`) rather than by intersecting in Python. |
+| `task_ids_matching(name_keys, *, match_all) -> set[uuid.UUID]` | The `?tag=` filter, with `match_all` carrying `?op=` (FRD §3.3). Both modes resolve in SQL rather than by combining sets in Python: `and` is `GROUP BY task_id HAVING COUNT(DISTINCT tag_id) = :n`, `or` is a plain `DISTINCT task_id WHERE tag_id IN (…)`. |
 
 Deletion is not on this port. `TagService.delete` owns it, because the guard it needs — refuse when tasks still hold the tag — is a use-case rule, and the count it reports comes from the same join the service already reads.
 
