@@ -40,7 +40,7 @@ jobs:
     name: Static gates
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Install uv
         uses: astral-sh/setup-uv@v6
@@ -65,7 +65,7 @@ jobs:
     env:
       APP_ENV: test
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Install uv
         uses: astral-sh/setup-uv@v6
@@ -84,7 +84,7 @@ jobs:
     env:
       APP_ENV: test
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Install uv
         uses: astral-sh/setup-uv@v6
@@ -104,7 +104,7 @@ jobs:
     name: Hurl E2E (container)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Install Hurl
         run: |
@@ -148,7 +148,7 @@ jobs:
     env:
       DATABASE_URL: postgresql+asyncpg://taskservice:taskservice@localhost:5432/taskservice
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Install uv
         uses: astral-sh/setup-uv@v6
@@ -174,7 +174,7 @@ jobs:
     # scanner that never scanned. Keep the ``v``.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Build production image
         run: docker build -f docker/Dockerfile -t internal-task-service:ci .
