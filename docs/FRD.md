@@ -64,7 +64,7 @@ The PDF notes the team is _"spread across multiple time zones."_ To avoid any am
 
 This is a hard rule — any code path that creates or reads a `datetime` without `tzinfo=UTC` is a bug.
 
-### 2.4 Title uniqueness
+### 2.5 Title uniqueness
 
 Comparison key is `title.strip().casefold()`. Examples that **collide**:
 

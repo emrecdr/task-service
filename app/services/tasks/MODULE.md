@@ -27,7 +27,7 @@ separate ORM/domain split (TIS §4.1 Decision callout).
 | ------------- | ----------------------- | ---------------------------------------------------------------- |
 | `id`          | `uuid.UUID` PK (UUIDv7) | server-owned; PUT/PATCH bodies containing `id` are rejected      |
 | `title`       | `str` 1..200            | preserved verbatim for display                                   |
-| `title_key`   | `str` UNIQUE            | canonical uniqueness key = `title.strip().casefold()` (FRD §2.4) |
+| `title_key`   | `str` UNIQUE            | canonical uniqueness key = `title.strip().casefold()` (FRD §2.5) |
 | `description` | `str` 0..2000           | optional                                                         |
 | `status`      | `str`                   | a state of the **active workflow definition** (seed: `new`, `in_progress`, `completed`) |
 | `priority`    | `int` 1..5              |                                                                  |

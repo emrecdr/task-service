@@ -235,7 +235,7 @@ The dependency rule is enforced by review (not import-linter). Two features (tas
 
 ### 4.1 `Task` entity
 
-> **Implements:** FRD §2.1 (entity fields and invariants), §2.4 (timezone, title uniqueness).
+> **Implements:** FRD §2.1 (entity fields and invariants), §2.4 (timezone), §2.5 (title uniqueness).
 > **Decisions captured here:** ORM-as-domain dual-use; `Final[int]` bounds placement; `from_input` / `snapshot` factories.
 
 > **Decision.** Phase 1 deliberately does not split a separate "pure domain" class from the ORM row. The `Task` SQLModel row **is** the domain entity (`table=True`). The dual-use simplifies the codebase by ~30% with no observable cost at this scale. Phase 2 may split them if a richer state-machine or invariants the ORM can't express make the duplication earn its keep.
