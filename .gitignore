@@ -169,6 +169,14 @@ graphify-out/graph.html
 graphify-out/.graphify_python
 graphify-out/.graphify_root
 
+# Graphify run output — rewritten wholesale on every build, so tracking it made each refresh a
+# several-hundred-line diff of machine-written text with no reviewable change in it. Regenerate
+# with `/graphify update .`. Saved query answers under graphify-out/memory/ stay tracked: those
+# are authored once and kept deliberately, not rebuilt.
+graphify-out/GRAPH_REPORT.md
+graphify-out/cost.json
+graphify-out/.graphify_labels.json
+
 # devt workflow state (recursive — catches sub-tree devt invocations)
 **/.devt/state/
 
