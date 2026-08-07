@@ -124,6 +124,24 @@ task-service/
 │           │   ├── seed.py           # default_workflow() + seed_workflow_if_missing()
 │           │   └── listeners.py      # log_event listener
 │           └── tests/                # test_models, test_definition, test_serialization, test_service
+│       └── tags/                     # Tag vocabulary + the task↔tag join (FRD §2.6–2.7)
+│           ├── __init__.py
+│           ├── dependencies.py       # Feature DI providers (repo → service)
+│           ├── errors.py             # TagNotFoundError, TagInUseError
+│           ├── constants.py          # NAME_MAX_LENGTH, MAX_TAGS_PER_TASK, NAME_KEY_CONSTRAINT
+│           ├── interfaces.py         # TagRepositoryInterface (ABC) — the port tasks depends on
+│           ├── MODULE.md             # Feature-internal doc: name_key rule, auto-create, in-use guard
+│           ├── api/v1/router.py      # GET /v1/tags, DELETE /v1/tags/{id}
+│           ├── application/
+│           │   ├── service.py        # TagService (list with counts, delete behind the in-use guard)
+│           │   └── dto.py            # TagResponse, TagListResponse
+│           ├── domain/
+│           │   ├── models.py         # Tag (name/name_key) + TaskTag join row
+│           │   └── events.py         # TaskTagsChanged, TagDeleted
+│           ├── infrastructure/
+│           │   ├── repository.py     # SQLModelTagRepository(TagRepositoryInterface)
+│           │   └── listeners.py      # log_event listener
+│           └── tests/                # test_tag_model, test_tag_service
 ├── tests/                            # Cross-boundary tests at the project root
 │   ├── conftest.py
 │   ├── integration/                  # In-process FastAPI app + repo
@@ -143,9 +161,13 @@ task-service/
 │   │           └── test_repository_sqlmodel.py
 │   │       └── workflows/
 │   │           └── test_workflow_endpoints.py
+│   │       └── tags/
+│   │           ├── test_tag_endpoints.py
+│   │           └── test_task_tagging.py
 │   ├── contract/                     # Port-conformance tests (parametrized over impls)
 │   │   ├── test_task_repository_interface.py
-│   │   └── test_workflow_repository_interface.py
+│   │   ├── test_workflow_repository_interface.py
+│   │   └── test_tag_repository_interface.py
 │   ├── hurl/                         # E2E scenarios in Hurl format
 │   │   ├── healthz.hurl
 │   │   ├── readyz.hurl
@@ -294,6 +316,27 @@ The five `Task*` events are `pydantic.BaseModel` subclasses inheriting from `cor
 3. **`get()` raises `TaskNotFoundError`** — the absence is a domain event, not a sentinel return. Callers can let it propagate to the global handler. A duplicate `title_key` surfaces as `DuplicateTaskError` from the commit; the service re-raises it with the caller's verbatim title.
 
 > **🔒 Internal contract.** `MUTABLE_FIELDS = frozenset({"title", "description", "status", "priority"})` MUST live in `domain/models.py` next to `Task`. The service consumes it for change-detection; `Task.patch()` consumes it to validate the patch dict. The repository deliberately stays out of mutability enforcement — that's a domain concern. Duplicating the set anywhere would let the two consumers drift.
+
+### 5.1 `TagRepositoryInterface` — the tags port
+
+> **Implements:** FRD §2.6 (`Tag` entity), §2.7 (task↔tag relationship).
+
+The tags feature owns both tables — `tags` (the vocabulary) and `task_tags` (the join) — because the join has no meaning without the vocabulary, and splitting them across features would put a foreign key across a feature boundary that neither side could enforce alone.
+
+Four methods, shaped by how the tasks feature actually consumes them:
+
+| Method | Why it exists |
+| ------ | ------------- |
+| `resolve(names) -> dict[str, uuid.UUID]` | Map submitted names to tag IDs, creating any that do not exist. Returns keyed by `name_key`, so the caller's casing is irrelevant. One round trip for the whole list rather than one per tag. |
+| `set_for_task(task_id, tag_ids)` | Replace a task's tag set wholesale. Replacement, not merge — §2.7 rule 2. |
+| `names_for_tasks(task_ids) -> dict[uuid.UUID, list[str]]` | Batch lookup for list responses. **This shape is the whole point**: a per-task call would make `GET /v1/tasks` N+1, one query per row returned. |
+| `task_ids_with_all(name_keys) -> set[uuid.UUID]` | The `?tag=` filter. Returns only tasks holding *every* named tag, matching §3.3's narrowing semantics; the AND is done in SQL (`GROUP BY … HAVING COUNT(DISTINCT tag_id) = :n`) rather than by intersecting in Python. |
+
+Deletion is not on this port. `TagService.delete` owns it, because the guard it needs — refuse when tasks still hold the tag — is a use-case rule, and the count it reports comes from the same join the service already reads.
+
+**The cross-feature seam.** `TaskService.__init__` takes `tags: TagRepositoryInterface` alongside `repo` and `workflows`, exactly as the workflows seam already works: the *interface* crosses the boundary, never the concrete class, and only `tasks/dependencies.py` may import `SQLModelTagRepository` — constructed from the same request session, so a task write and its tag rows commit in one transaction. Without that shared session the tagging half could commit while the task half rolled back, and the outbox guarantee would be quietly untrue for tags.
+
+> **🔒 Internal contract.** `Tag.name_key = name.strip().casefold()` is the unique column; `name` is preserved verbatim for display. Identical to the `Task.title_key` rule (FRD §2.5) and for the same reason — duplicate detection must never depend on the caller's casing. Any new lookup goes through `name_key`, never `name`.
 
 ---
 

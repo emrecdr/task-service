@@ -23,6 +23,8 @@ All endpoints are mounted under `/v1`. Open the interactive docs at <http://loca
 | `GET`    | `/v1/tasks/{id}/transitions` | Legal moves out of the task's state (UI buttons)            | `200 OK`          | 404 `task_not_found`, 422 `validation_error`                                                                                                      |
 | `GET`    | `/v1/workflow`               | The active workflow definition                              | `200 OK`          | —                                                                                                                                                 |
 | `PUT`    | `/v1/workflow`               | Replace the workflow definition                             | `200 OK`          | 409 `workflow_states_in_use`, 422 `invalid_workflow_definition` / `validation_error`                                                              |
+| `GET`    | `/v1/tags`                   | The tag vocabulary, with per-tag task counts                | `200 OK`          | —                                                                                                                                                 |
+| `DELETE` | `/v1/tags/{id}`              | Delete a tag no task is using                               | `204 No Content`  | 404 `tag_not_found`, 409 `tag_in_use`, 422 `validation_error`                                                                                      |
 | `GET`    | `/healthz`                   | Liveness — synchronous, no I/O                              | `200 OK`          | —                                                                                                                                                 |
 | `GET`    | `/readyz`                    | Readiness — DB round-trip                                   | `200 OK` or `503` | —                                                                                                                                                 |
 | `GET`    | `/metrics`                   | Prometheus exposition (ops-only, not in the OpenAPI schema) | `200 OK`          | —                                                                                                                                                 |
@@ -119,6 +121,7 @@ app/
         ├── errors.py              # DuplicateTaskError, InvalidTransitionError, TaskNotFoundError, EmptyUpdateError, UnknownStatusError
         ├── MODULE.md              # Feature-internal doc: invariants, error-table, conventions
         └── tests/                 # Feature-local unit tests (no FastAPI, no DB)
+    └── tags/                      # Tag vocabulary + the task↔tag join (GET /v1/tags, DELETE /v1/tags/{id})
     └── workflows/                 # Workflow definitions as runtime data (GET/PUT /v1/workflow)
         ├── domain/                # State/Transition value objects + Workflow definition + events
         ├── application/           # WorkflowService (validate + strand guard) + DTOs

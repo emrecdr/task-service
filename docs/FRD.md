@@ -77,6 +77,32 @@ Examples that **do not** collide:
 
 Duplicate creates and renames that collide must raise `DuplicateTaskError` → HTTP **409 Conflict**.
 
+### 2.6 `Tag`
+
+A label a task can carry. Tags are a **vocabulary owned by its own feature slice** (`app/services/tags/`); a task references them, it does not own them.
+
+| Field        | Type       | Constraint                                     | Origin        |
+| ------------ | ---------- | ---------------------------------------------- | ------------- |
+| `id`         | `UUID`     | UUIDv7, primary key                            | server-owned  |
+| `name`       | `str`      | 1–50 chars after trimming, no NUL              | client        |
+| `name_key`   | `str`      | UNIQUE — `name.strip().casefold()`             | derived       |
+| `created_at` | `datetime` | tz-aware UTC                                   | server-owned  |
+
+`name_key` follows the same rule as `Task.title_key` (§2.5): the display form is preserved verbatim, the comparison key is normalised. So `"Urgent"`, `"urgent"` and `" URGENT "` are one tag, and the first spelling used is the one stored and returned.
+
+### 2.7 Task ↔ tag relationship
+
+Many-to-many, through a `task_tags` join owned by the tags feature. The relationship is expressed on the task's own representation — `TaskResponse.tags` is a list of tag **names**, sorted, never IDs, so a client never has to resolve a second resource to render a task.
+
+Four rules govern it:
+
+1. **Tags are set on the task body, not on a sub-resource.** `POST`/`PUT`/`PATCH /v1/tasks` accept a `tags` array. There is no `/v1/tasks/{id}/tags` endpoint — one obvious way (CLAUDE.md).
+2. **The list is replaced, never merged.** Sending `["a"]` to a task tagged `["a","b"]` leaves it tagged `["a"]`. `PUT` omitting `tags` clears them (full replacement); `PATCH` omitting `tags` leaves them untouched (partial update). This is the same omitted-field semantics the other fields already have.
+3. **Unknown names are created on use.** Tagging with a name no tag holds creates that tag in the same transaction. A caller never has to pre-register a vocabulary, and there is no separate tag-creation endpoint.
+4. **Deleting a tag that is in use is refused** with **409** `tag_in_use`, reporting how many tasks hold it. Mirrors the workflow strand guard (§2.2), so the service has one story about destructive changes: refuse, report, let the caller decide.
+
+Duplicate names within one request collapse to a single tag rather than erroring — `["a","A"," a "]` is one tag, because they share a `name_key`.
+
 ## 3. API Contract
 
 All routes are mounted under `/v1`. All responses are JSON. All timestamps are RFC 3339 in UTC (`2026-05-14T13:01:42Z`).
@@ -94,6 +120,8 @@ All routes are mounted under `/v1`. All responses are JSON. All timestamps are R
 | `GET`    | `/v1/tasks/{id}/transitions` | Legal moves out of the task's state (UI buttons; definition `meta` passes through). | `200 OK` + `TaskTransitionsResponse` | 404 |
 | `GET`    | `/v1/workflow`   | The active workflow definition (`version`, `created_at`, canonical `definition`). | `200 OK` + `WorkflowResponse` | —             |
 | `PUT`    | `/v1/workflow`   | Replace the definition (append-only version; collect-all-errors validation; strand guard). | `200 OK` + `WorkflowResponse` | 409, 422      |
+| `GET`    | `/v1/tags`       | List the tag vocabulary with per-tag task counts.  | `200 OK` + `TagListResponse`  | —             |
+| `DELETE` | `/v1/tags/{id}`  | Delete an unused tag (409 when tasks still hold it). | `204 No Content`            | 404, 409      |
 | `GET`    | `/healthz`       | Liveness.                            | `200 OK` `{"status":"ok"}`    | —             |
 | `GET`    | `/readyz`        | Readiness (DB session reachable).    | `200 OK` or `503`             | —             |
 
@@ -107,12 +135,17 @@ All routes are mounted under `/v1`. All responses are JSON. All timestamps are R
 | `description` | string | no       | ≤ 2000 chars.           |
 | `status`      | string | no       | Must be an entry state of the active workflow; omitted → its `default_entry`. Explicit `null` → 422. |
 | `priority`    | int    | yes      | 1–5.                    |
+| `tags`        | array  | no       | Tag names, 1–50 chars each, ≤ 25 per task. Unknown names are created (§2.7). Omitted → untagged; explicit `null` → 422. |
 
-**`TaskUpdate`** (PUT body): same shape as `TaskCreate` but **every** field is required (full replacement). `created_at` and `id` are server-owned and rejected if present.
+**`TaskUpdate`** (PUT body): same shape as `TaskCreate` but **every** field is required (full replacement). `created_at` and `id` are server-owned and rejected if present. `tags` is the one exception to "every field is required": omitting it clears the task's tags, which is what full replacement means for a collection.
 
-**`TaskPatch`** (PATCH body): any subset of `title`, `description`, `status`, `priority`. At least one field must be provided (422 otherwise).
+**`TaskPatch`** (PATCH body): any subset of `title`, `description`, `status`, `priority`, `tags`. At least one field must be provided (422 otherwise). Supplying `tags` replaces the whole list; omitting it leaves the tags untouched.
 
-**`TaskResponse`**: all `Task` fields including `id` and `created_at`.
+**`TaskResponse`**: all `Task` fields including `id` and `created_at`, plus `tags` — an array of tag **names**, sorted, empty when untagged.
+
+**`TagResponse`**: `id`, `name`, `created_at`, `task_count`.
+
+**`TagListResponse`**: `{"items": [/* TagResponse */], "total": 12}`. The full vocabulary; tags are bounded by human curation, so this list is not paginated.
 
 **`TaskListResponse`**:
 
@@ -132,6 +165,7 @@ All routes are mounted under `/v1`. All responses are JSON. All timestamps are R
 | Param    | Type                            | Default         | Notes                                                                                                       |
 | -------- | ------------------------------- | --------------- | ----------------------------------------------------------------------------------------------------------- |
 | `status`    | string         | —          | Filters to that status only. Multiple values supported via `?status=new&status=in_progress`. Unknown values match nothing (`200`, empty list) — filters are not validated against the workflow. |
+| `tag`       | string         | —          | Filters to tasks carrying that tag. Repeatable, and repetition **narrows**: `?tag=urgent&tag=backend` returns only tasks holding *both*. Matched on `name_key`, so the filter is case-insensitive. Unknown values match nothing (`200`, empty list), consistent with `status`. Note the deliberate asymmetry: repeated `status` widens (a task has one status, so requiring two would return nothing), repeated `tag` narrows (a task has many tags, so narrowing is the only useful reading). |
 | `order_by`  | `priority`     | `priority` | Sort column. Only `priority` is sortable in Phase 1; equal priorities are sub-sorted by `created_at` ascending. |
 | `order_dir` | `asc \| desc`  | `desc`     | Sort direction.                                                                                                    |
 | `limit`     | int            | `100`      | 1–500. Values outside this range → 422.                                                                            |
@@ -169,6 +203,8 @@ Malformed JSON request bodies (which FastAPI would otherwise surface as a raw `4
 | Entering a state that is already at its `wip_limit`                  | `WipLimitExceededError`      | `409 Conflict`              | `wip_limit_exceeded` |
 | `PUT /v1/workflow` body that fails definition validation (all problems listed at once) — including server-owned `version`/`created_at` keys, rejected as unknown top-level keys (deliberately **not** `read_only_field`: the body is a definition document, not the resource), and malformed guard meta (`wip_limit` not a non-negative int, `roles` not a non-empty list of non-empty strings) | `WorkflowValidationError`    | `422 Unprocessable Entity`  | `invalid_workflow_definition` |
 | `PUT /v1/workflow` that would strand tasks in undefined states      | `WorkflowStatesInUseError`   | `409 Conflict`              | `workflow_states_in_use` |
+| Tag ID not found on `DELETE /v1/tags/{id}`                          | `TagNotFoundError`           | `404 Not Found`             | `tag_not_found`    |
+| `DELETE /v1/tags/{id}` for a tag tasks still hold (`details.task_count` carries how many) | `TagInUseError` | `409 Conflict`              | `tag_in_use`       |
 | PATCH body with no fields                                           | `EmptyUpdateError`           | `422 Unprocessable Entity`  | `empty_update`     |
 | Attempt to set server-owned field on PUT/PATCH (`id`, `created_at`) | `ReadOnlyFieldError`         | `422 Unprocessable Entity`  | `read_only_field`  |
 | Request body whose declared `Content-Length` exceeds the configured limit | (request-hardening middleware) | `413 Content Too Large`  | `payload_too_large` |
@@ -191,6 +227,7 @@ The service ships a durable **transactional outbox**. Each domain event is writt
 | `TaskStatusChanged` | When the `status` field is among the changed fields. Fires in addition to `TaskUpdated`. | `task: Task`, `from_status: str`, `to_status: str`                          |
 | `TaskCompleted`     | When a status change **enters a state whose definition carries `"completes": true`** (the seed marks `completed`). Fires in addition to `TaskStatusChanged`. | `task: Task`                                                                |
 | `TaskDeleted`       | After successful DELETE.                                                                 | `task: Task` (the deleted snapshot)                                         |
+| `TaskTagsChanged`   | When a create or update leaves the task's tag set different from what it was. Independent of `TaskUpdated`: a tags-only change fires this alone, because no `Task` column moved. | `task_id: UUID`, `tags: list[str]` (the new set), `added: list[str]`, `removed: list[str]` |
 
 Payloads carry detached domain `Task` snapshots (`Task.snapshot()`), never API DTOs — domain events cannot depend on the application layer. Each event is serialized to the outbox row as JSONB (`event.model_dump(mode="json")`) and reconstructed on delivery via a class registry keyed by the event's type name.
 
@@ -198,7 +235,11 @@ Payloads carry detached domain `Task` snapshots (`Task.snapshot()`), never API D
 
 A failed delivery is retried on a later poll (`retry_count` climbs, `last_error` records the reason); past a retry ceiling the row is stamped `dead_lettered_at` and left as a dead-letter for triage — never re-polled, never auto-pruned. Only the two ends of a failure are logged at alert level (`outbox_delivery_failed` on the first, `outbox_dead_lettered` on death); the retries between them are debug, so a wide retry window cannot flood the log. Only successfully **delivered** rows age out — a periodic prune deletes rows whose `published_at` is at least the retention window (7 days) old.
 
-The workflows feature adds a sixth event: `WorkflowUpdated` (`version: int`, `states: list[str]`), published after every successful `PUT /v1/workflow` — definition changes are the highest-impact admin action and always reach the logs.
+`TaskTagsChanged` carries `task_id` rather than a `Task` snapshot, because tags live in their own tables — a detached `Task` has no tag attribute to populate, and inventing one would put a tags column on the tasks feature purely to serve an event payload.
+
+The workflows feature adds `WorkflowUpdated` (`version: int`, `states: list[str]`), published after every successful `PUT /v1/workflow` — definition changes are the highest-impact admin action and always reach the logs. The tags feature adds `TagDeleted` (`tag_id: UUID`, `name: str`) for the same reason: removing a label from the vocabulary is an admin action that should be attributable after the fact.
+
+There is deliberately **no** `TagCreated`. Tags are created as a side effect of tagging a task (§2.7), so the fact is already carried by `TaskTagsChanged.added`; a separate event would fire in lockstep with it and tell a listener nothing new.
 
 ### 5.2 Built-in listeners (Phase 1)
 
@@ -323,10 +364,10 @@ The four mandatory dev-tool gates (`ruff`, `pyright`, `bandit`, `pre-commit`) ar
 
 The Phase 1 release ships when all of the following hold:
 
-1. Every row in Section 3.1 has at least one passing integration test under `tests/integration/services/tasks/`.
+1. Every row in Section 3.1 has at least one passing integration test under `tests/integration/services/<feature>/`.
 2. Every error code in Section 4 has at least one passing integration test asserting the standardized envelope (Section 3.4).
-3. Every event in Section 5.1 has at least one passing service-layer **unit test** under `app/services/tasks/tests/` asserting it fires under the right conditions and **does not** fire under the wrong ones.
-4. `tests/contract/test_task_repository_interface.py` passes against every concrete `TaskRepositoryInterface` implementation.
+3. Every event in Section 5.1 has at least one passing service-layer **unit test** under `app/services/<feature>/tests/` asserting it fires under the right conditions and **does not** fire under the wrong ones.
+4. `tests/contract/` passes against every concrete implementation of every repository port.
 5. `tests/hurl/*.hurl` scenarios — at minimum `healthz`, `task_create`, `task_create_duplicate_title`, `task_lifecycle`, `task_list_filter_sort`, `task_not_found` — pass against the running container.
 6. `ruff check`, `ruff format --check`, `bandit`, `pyright`, and `pytest --cov=app --cov-fail-under=80` all pass in CI.
 7. The Docker image builds and `docker run` of the published tag binds to port 8000 and responds 200 on `/healthz`.

@@ -133,7 +133,7 @@ Captured here as planning seeds only; detailed designs and TIS revisions happen 
 - Rate limiting via **slowapi**.
 - **Users module** — tasks created by and assigned to a user.
 - **RBAC** authentication & authorization module (OIDC + role/permission matrix).
-- **Tags module** — tasks can have one or multiple tags.
+- **Tags module** — tasks can have one or multiple tags. *Design locked 2026-08-07, contract in FRD §2.6–2.7:* its own feature slice; tags set inline on the task body, unknown names created on use, `GET /v1/tags` + `DELETE /v1/tags/{id}` refusing 409 while tasks still hold the tag, and a repeatable `?tag=` filter that narrows.
 - **Workflow Phase module** — ✅ *delivered in Phase 1* (states/transitions as runtime data, `GET/PUT /v1/workflow`, transition enforcement); per-phase business rules ✅ *delivered 2026-08-04* (a transition's `{"roles": [...]}` guard → 403 `transition_forbidden`, a state's `{"wip_limit": N}` cap → 409 `wip_limit_exceeded`, both declared on the definition's open `meta` channel and enforced by the engine through a `TransitionContext`). The acting roles arrive on the provisional `X-Roles` header until authentication lands.
 - **Attachment support** — tasks can have file attachments.
 - Notification adapter for Slack subscribing to `TaskStatusChanged` / `TaskCompleted`.
